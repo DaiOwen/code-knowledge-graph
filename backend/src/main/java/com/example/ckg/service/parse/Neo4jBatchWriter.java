@@ -111,19 +111,28 @@ public class Neo4jBatchWriter {
         List<List<CodeGraphResult.EdgeData>> batches = partition(edges, BATCH_SIZE);
 
         for (List<CodeGraphResult.EdgeData> batch : batches) {
+            List<Map<String, Object>> edgeList = new ArrayList<>();
             for (CodeGraphResult.EdgeData edge : batch) {
-                // Create CALLS relationship between methods
-                neo4jClient.query("""
-                    MATCH (from:Method {projectId: $projectId, id: $fromId})
-                    MATCH (to:Method {projectId: $projectId, id: $toId})
-                    MERGE (from)-[r:CALLS]->(to)
-                    """)
-                    .bind(projectId).to("projectId")
-                    .bind(edge.getFrom()).to("fromId")
-                    .bind(edge.getTo()).to("toId")
-                    .run();
+                edgeList.add(Map.of(
+                    "projectId", projectId,
+                    "fromName", edge.getFrom() != null ? edge.getFrom() : "",
+                    "toName", edge.getTo() != null ? edge.getTo() : "",
+                    "type", edge.getType() != null ? edge.getType() : "calls"
+                ));
             }
+
+            // Create CALLS relationship using method names
+            neo4jClient.query("""
+                UNWIND $edges AS edge
+                MATCH (from:Method {projectId: edge.projectId, name: edge.fromName})
+                MATCH (to:Method {projectId: edge.projectId, name: edge.toName})
+                MERGE (from)-[r:CALLS]->(to)
+                """)
+                .bind(edgeList).to("edges")
+                .run();
+
             total += batch.size();
+            log.debug("Written {} CALLS edges", total);
         }
 
         log.info("Total CALLS edges written: {}", total);
