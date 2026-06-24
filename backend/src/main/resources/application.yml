@@ -1,0 +1,81 @@
+spring:
+  application:
+    name: code-knowledge-graph
+
+  # Database Configuration
+  datasource:
+    url: jdbc:postgresql://localhost:5432/ckg
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+
+  # Neo4j Configuration
+  neo4j:
+    uri: bolt://localhost:7687
+    authentication:
+      username: neo4j
+      password: neo4j123456
+
+  # Redis Configuration
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      database: 0
+
+  # Async Configuration
+  task:
+    execution:
+      pool:
+        core-size: 2
+        max-size: 8
+        queue-capacity: 100
+    scheduling:
+      pool:
+        size: 2
+
+# JWT Configuration
+jwt:
+  secret: your-secret-key-at-least-256-bits-long-for-hs256-algorithm
+  expiration: 86400000  # 24 hours
+
+# LLM Configuration
+llm:
+  provider: openai
+  model: gpt-4
+  api-key: ${OPENAI_API_KEY:}
+  base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
+  temperature: 0.7
+  max-tokens: 4000
+
+# Parse Configuration
+parse:
+  max-parallel-projects: 2
+  timeout-minutes: 30
+  chunk-size: 100
+  max-commits: 1000
+  max-file-lines: 5000
+  max-file-size-mb: 10
+
+# Git Repository Storage
+git:
+  repos-path: ./repos
+
+# Logging Configuration
+logging:
+  level:
+    root: INFO
+    com.example.ckg: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+server:
+  port: 8080

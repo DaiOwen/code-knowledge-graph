@@ -1,0 +1,3811 @@
+# 代码知识图谱问答系统设计文档
+
+> 创建日期: 2026-06-24
+> 状态: 评审中
+> 版本: v1.4 (深入技术细节 + 开发计划)
+
+## 一、项目概述
+
+### 1.1 项目目标
+
+构建一个**代码知识图谱问答系统**，支持：
+- 解析微服务代码（Java Spring Boot + Vue）
+- 构建代码知识图谱（代码结构 + 业务语义）
+- 用户通过自然语言提问，系统基于知识图谱回答
+- 支持代码溯源（谁在什么时候提交的代码）
+
+### 1.2 核心能力
+
+| 能力 | 说明 |
+|------|------|
+| 代码结构解析 | 类、方法、字段、调用关系、继承关系 |
+| 业务语义推断 | 业务域、业务流程、业务实体 |
+| 自然语言问答 | "订单下单流程有哪些步骤？" |
+| 代码溯源 | "createOrder 方法最后是谁修改的？" |
+| 图谱可视化 | 调用链、依赖关系可视化 |
+| 代码定位 | 点击跳转到具体代码位置 |
+
+---
+
+## 二、需求总结
+
+| 维度 | 选择 |
+|------|------|
+| 代码来源 | 现有微服务代码库 |
+| 技术栈 | Java Spring Boot + Vue |
+| 知识图谱深度 | 代码结构 + 业务语义 |
+| 构建方式 | 静态分析为主 + 运行时补充 |
+| LLM 模式 | GraphRAG |
+| 图数据库 | Neo4j |
+| 前端交互 | 对话 + 图谱可视化 + 代码定位 |
+| Git 平台 | 可配置（优先 GitLab） |
+| 用户管理 | 团队内部使用（可扩展） |
+| 项目管理 | 多项目模式 |
+| 同步策略 | Webhook → 定时增量 → 手动 |
+| LLM 后端 | 可配置多模型 |
+| 部署方式 | Docker Compose → K8s |
+| 代码溯源 | 支持提交历史追溯 |
+
+---
+
+## 三、系统架构
+
+### 3.1 整体架构
+
+采用**单体分层架构**，后续可拆分为微服务：
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                         前端层 (Vue3)                           │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌───────────┐ │
+│  │ 问答对话界面 │ │ 图谱可视化   │ │ 代码查看器   │ │ 项目管理   │ │
+│  │ (Chat UI)   │ │ (D3/ECharts)│ │ (Monaco)    │ │ (管理页)  │ │
+│  └─────────────┘ └─────────────┘ └─────────────┘ └───────────┘ │
+└────────────────────────────────────────────────────────────────┘
+                              │ HTTP/WebSocket
+┌────────────────────────────────────────────────────────────────┐
+│                    后端服务 (Spring Boot 3.x)                   │
+│  ┌───────────────────────────────────────────────────────────┐ │
+│  │                       API Controller                       │ │
+│  └───────────────────────────────────────────────────────────┘ │
+│  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌─────────────┐ │
+│  │ 问答模块    │ │ 解析模块    │ │ 项目模块    │ │ 用户模块    │ │
+│  │ QAService  │ │ ParseService│ │ ProjectSvc │ │ UserService │ │
+│  └────────────┘ └────────────┘ └────────────┘ └─────────────┘ │
+│  ┌───────────────────────────────────────────────────────────┐ │
+│  │                    LLM Adapter (LangChain4j)               │ │
+│  │         支持 OpenAI / Azure / 国产模型 / Ollama            │ │
+│  └───────────────────────────────────────────────────────────┘ │
+│  ┌───────────────────────────────────────────────────────────┐ │
+│  │                    MCP Client                              │ │
+│  │         调用 codegraph MCP Server 进行代码解析              │ │
+│  └───────────────────────────────────────────────────────────┘ │
+└────────────────────────────────────────────────────────────────┘
+                              │
+┌────────────────────────────────────────────────────────────────┐
+│                        数据存储层                              │
+│  ┌─────────────────────┐      ┌─────────────────────────────┐  │
+│  │ codegraph MCP       │ ──→  │ Neo4j                       │  │
+│  │ (代码结构解析)       │ 同步  │ (代码结构 + 业务语义)        │  │
+│  │ - 符号/类/方法       │      │ + 提交历史/作者信息          │  │
+│  │ - 调用关系          │      │ - GraphRAG 查询             │  │
+│  └─────────────────────┘      └─────────────────────────────┘  │
+│                                                                │
+│  ┌────────────┐ ┌────────────┐ ┌─────────────┐                │
+│  │ PostgreSQL │ │ 本地Git仓库│ │ Redis       │                │
+│  │ (业务数据)  │ │ (代码缓存) │ │ (会话缓存)   │                │
+│  └────────────┘ └────────────┘ └─────────────┘                │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### 3.2 技术选型
+
+| 层级 | 技术 | 说明 |
+|------|------|------|
+| 前端框架 | Vue3 + TypeScript + Vite | 现代化前端开发 |
+| UI 组件库 | Element Plus | Vue3 企业级组件 |
+| 状态管理 | Pinia | Vue3 官方推荐 |
+| 图谱可视化 | D3.js / ECharts | 关系图渲染 |
+| 代码编辑器 | Monaco Editor | VS Code 内核 |
+| 后端框架 | Spring Boot 3.x | Java 微服务框架 |
+| 图数据库 | Neo4j | 知识图谱存储 |
+| 关系数据库 | PostgreSQL | 业务数据存储 |
+| 缓存 | Redis | 会话/热点缓存 |
+| MCP Client | mcp-java SDK | 调用 codegraph MCP |
+| LLM 框架 | LangChain4j | Java LLM 集成 |
+| 代码解析 | codegraph MCP | 已配置，直接调用 |
+
+---
+
+## 四、MCP Client 调用方案（新增）
+
+### 4.1 技术架构
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Spring Boot 后端                          │
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │  ParseService                                          │ │
+│  │      │                                                 │ │
+│  │      ▼                                                 │ │
+│  │  ┌─────────────────────────────────────────────────┐ │ │
+│  │  │ MCP Client (io.github.modelcontextprotocol)      │ │ │
+│  │  │ • 通过 stdio/SSE 与 MCP Server 通信              │ │ │
+│  │  │ • 调用 codegraph 的 tools                        │ │ │
+│  │  └─────────────────────────────────────────────────┘ │ │
+│  │      │                                                 │ │
+│  │      ▼ (stdio 子进程通信)                              │ │
+│  │  ┌─────────────────────────────────────────────────┐ │ │
+│  │  │ codegraph MCP Server (子进程)                     │ │ │
+│  │  │ 启动: codegraph serve --mcp                      │ │ │
+│  │  │ 工具: codegraph_files, codegraph_explore, etc.   │ │ │
+│  │  └─────────────────────────────────────────────────┘ │ │
+│  └───────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 4.2 调用流程
+
+```
+1. 项目导入触发解析
+   └── ParseService.importProject(projectId)
+
+2. 启动/复用 MCP Server 进程
+   └── ProcessBuilder: codegraph serve --mcp --path /repo/path
+
+3. 调用 MCP Tools
+   ├── codegraph_files() → 获取文件列表
+   ├── codegraph_explore(query) → 获取符号和调用关系
+   └── codegraph_search(symbol) → 搜索特定符号
+
+4. 解析 MCP 响应 (JSON)
+   └── 转换为内部数据结构
+
+5. 写入 Neo4j
+   └── 批量创建节点和关系
+
+6. 关闭 MCP Server 进程（或保持池化）
+```
+
+### 4.3 MCP Client 依赖
+
+```xml
+<!-- MCP Java SDK -->
+<dependency>
+    <groupId>io.github.modelcontextprotocol</groupId>
+    <artifactId>mcp-java</artifactId>
+    <version>0.5.0</version>
+</dependency>
+```
+
+### 4.4 核心代码示例
+
+```java
+@Service
+public class McpCodeParserService {
+
+    private McpClient mcpClient;
+
+    public void initialize(Path projectPath) {
+        // 启动 codegraph MCP Server 作为子进程
+        ProcessBuilder pb = new ProcessBuilder(
+            "codegraph", "serve", "--mcp", "--path", projectPath.toString()
+        );
+        Process process = pb.start();
+
+        // 创建 MCP Client 连接
+        this.mcpClient = McpClient.create(process.getInputStream(), process.getOutputStream());
+    }
+
+    public CodeGraphResult parseProject() {
+        // 调用 codegraph_files 获取文件列表
+        McpResponse filesResponse = mcpClient.callTool("codegraph_files", Map.of());
+
+        // 调用 codegraph_explore 获取符号和关系
+        McpResponse exploreResponse = mcpClient.callTool("codegraph_explore",
+            Map.of("query", "all symbols and calls"));
+
+        return parseResponse(exploreResponse);
+    }
+}
+```
+
+---
+
+## 五、codegraph → Neo4j 映射规则（新增）
+
+### 5.1 节点映射
+
+| codegraph 节点类型 | Neo4j 节点类型 | 属性映射 |
+|-------------------|---------------|---------|
+| `file` | `FileNode` | name, path, language |
+| `function` / `method` | `Method` | name, signature, startLine, endLine, filePath |
+| `class` | `Class` | name, fullName, type=CLASS, filePath |
+| `interface` | `Class` | name, fullName, type=INTERFACE, filePath |
+| `variable` / `field` | `Field` | name, type, filePath |
+| `package` / `namespace` | `Package` | name, path |
+
+### 5.2 关系映射
+
+| codegraph 边类型 | Neo4j 关系类型 | 说明 |
+|-----------------|---------------|------|
+| `calls` | `CALLS` | Method → Method |
+| `extends` | `EXTENDS` | Class → Class |
+| `implements` | `IMPLEMENTS` | Class → Class (interface) |
+| `defines` (class→method) | `HAS_METHOD` | Class → Method |
+| `defines` (class→field) | `HAS_FIELD` | Class → Field |
+| `contains` (package→class) | `CONTAINS` | Package → Class |
+| `imports` | `IMPORTS` | Class/File → Class |
+
+### 5.3 转换示例
+
+**codegraph 输出 (JSON):**
+```json
+{
+  "nodes": [
+    {"id": "n1", "type": "class", "name": "OrderService", "file": "src/OrderService.java", "line": 15},
+    {"id": "n2", "type": "method", "name": "createOrder", "parent": "n1", "line": 25, "signature": "Order createOrder(OrderRequest req)"},
+    {"id": "n3", "type": "method", "name": "validateStock", "parent": "n4", "line": 10},
+    {"id": "n4", "type": "class", "name": "InventoryService", "file": "src/InventoryService.java", "line": 8}
+  ],
+  "edges": [
+    {"from": "n2", "to": "n3", "type": "calls"}
+  ]
+}
+```
+
+**转换后的 Cypher:**
+```cypher
+// 创建类节点
+CREATE (c1:Class {name: 'OrderService', fullName: 'com.example.OrderService', filePath: 'src/OrderService.java', startLine: 15})
+CREATE (c2:Class {name: 'InventoryService', fullName: 'com.example.InventoryService', filePath: 'src/InventoryService.java', startLine: 8})
+
+// 创建方法节点
+CREATE (m1:Method {name: 'createOrder', signature: 'Order createOrder(OrderRequest req)', startLine: 25, filePath: 'src/OrderService.java'})
+CREATE (m2:Method {name: 'validateStock', startLine: 10, filePath: 'src/InventoryService.java'})
+
+// 创建关系
+CREATE (c1)-[:HAS_METHOD]->(m1)
+CREATE (c2)-[:HAS_METHOD]->(m2)
+CREATE (m1)-[:CALLS]->(m2)
+```
+
+---
+
+## 六、知识图谱模型
+
+### 6.1 节点类型
+
+```
+项目节点
+├── Project: {id, name, gitUrl, branch, language, ...}
+
+代码结构节点
+├── Service: {id, name, fullName, type, ...}    // 服务/应用
+├── Package: {id, name, path, ...}
+├── Class: {id, name, fullName, type, ...}      // 类/接口/枚举
+├── Method: {id, name, signature, returnType, filePath, startLine, endLine, ...}
+├── Field: {id, name, type, ...}                // 字段/属性
+├── Annotation: {id, name, attributes, ...}     // 注解
+
+业务语义节点
+├── Domain: {id, name, description, ...}        // 业务域
+├── BusinessFlow: {id, name, description, ...}  // 业务流程
+├── BusinessStep: {id, name, order, ...}        // 流程步骤
+├── Entity: {id, name, tableName, ...}          // 业务实体
+├── ApiEndpoint: {id, path, method, desc, ...}  // API接口
+
+代码溯源节点
+├── Commit: {id, hash, message, authoredAt, ...}
+├── Author: {id, name, email, ...}
+```
+
+### 6.2 关系类型
+
+```
+项目结构关系
+├── CONTAINS    // Project -[:CONTAINS]-> Service
+├── BELONGS_TO  // Class -[:BELONGS_TO]-> Package
+
+代码调用关系
+├── CALLS          // Method -[:CALLS]-> Method
+├── EXTENDS        // Class -[:EXTENDS]-> Class
+├── IMPLEMENTS     // Class -[:IMPLEMENTS]-> Interface
+├── HAS_METHOD     // Class -[:HAS_METHOD]-> Method
+├── HAS_FIELD      // Class -[:HAS_FIELD]-> Field
+├── HAS_ANNOTATION // 元素 -[:HAS_ANNOTATION]-> Annotation
+
+业务语义关系
+├── BELONGS_DOMAIN    // Service -[:BELONGS_DOMAIN]-> Domain
+├── PART_OF_FLOW      // BusinessStep -[:PART_OF_FLOW]-> Flow
+├── NEXT_STEP         // BusinessStep -[:NEXT_STEP]-> Step
+├── IMPLEMENTS_FLOW   // Method -[:IMPLEMENTS_FLOW]-> Flow
+├── EXPOSES_API       // Method -[:EXPOSES_API]-> ApiEndpoint
+├── USES_ENTITY       // Method/Class -[:USES_ENTITY]-> Entity
+
+代码溯源关系
+├── AUTHORED_BY       // Commit -[:AUTHORED_BY]-> Author
+├── MODIFIED_BY       // Class/Method -[:MODIFIED_BY]-> Commit
+├── LAST_MODIFIED_BY  // Class/Method -[:LAST_MODIFIED_BY]-> Commit
+```
+
+---
+
+## 七、GraphRAG 实现架构（新增）
+
+### 7.1 问答处理流水线
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   GraphRAG 问答流水线                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  用户问题                                                    │
+│      │                                                      │
+│      ▼                                                      │
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │ Step 1: 问题理解 (LangChain4j)                         │ │
+│  │ ────────────────────────────────────────────────────  │ │
+│  │ • 输入: 用户自然语言问题                                │ │
+│  │ • 处理: LLM 提取关键词实体、分类问题类型                 │ │
+│  │ • 输出: {intent: "调用链查询", entities: ["createOrder"]}│ │
+│  └───────────────────────────────────────────────────────┘ │
+│      │                                                      │
+│      ▼                                                      │
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │ Step 2: 查询模板匹配                                    │ │
+│  │ ────────────────────────────────────────────────────  │ │
+│  │ • 根据问题类型匹配预定义 Cypher 模板                    │ │
+│  │ • 匹配成功 → 填充参数，跳转 Step 3                      │ │
+│  │ • 匹配失败 → 跳转 Step 2b (LLM 生成)                   │ │
+│  └───────────────────────────────────────────────────────┘ │
+│      │                                                      │
+│      │ (无模板匹配)                                          │
+│      ▼                                                      │
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │ Step 2b: Cypher 生成 (LangChain4j)                     │ │
+│  │ ────────────────────────────────────────────────────  │ │
+│  │ • 输入: 图谱 Schema + 用户问题                          │ │
+│  │ • 处理: LLM 生成 Cypher 查询语句                        │ │
+│  │ • 安全: 只允许 MATCH/RETURN，禁止 CREATE/DELETE/SET    │ │
+│  └───────────────────────────────────────────────────────┘ │
+│      │                                                      │
+│      ▼                                                      │
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │ Step 3: 执行 Cypher (Neo4j Driver)                     │ │
+│  │ ────────────────────────────────────────────────────  │ │
+│  │ • 执行查询，设置超时时间 (默认 30s)                     │ │
+│  │ • 输出: {nodes: [...], relationships: [...]}          │ │
+│  └───────────────────────────────────────────────────────┘ │
+│      │                                                      │
+│      ▼                                                      │
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │ Step 4: 结果上下文构建                                  │ │
+│  │ ────────────────────────────────────────────────────  │ │
+│  │ • 将图谱结果转换为文本描述                              │ │
+│  │ • 加载相关代码片段（从本地仓库）                         │ │
+│  │ • 构建来源引用 [{file, line, snippet}]                │ │
+│  └───────────────────────────────────────────────────────┘ │
+│      │                                                      │
+│      ▼                                                      │
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │ Step 5: 答案生成 (LangChain4j)                          │ │
+│  │ ────────────────────────────────────────────────────  │ │
+│  │ • 输入: 问题 + 图谱上下文 + 代码片段                    │ │
+│  │ • 处理: LLM 生成自然语言回答                            │ │
+│  │ • 输出: 回答文本 + 来源引用                             │ │
+│  └───────────────────────────────────────────────────────┘ │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 7.2 预定义查询模板库
+
+| 模板 ID | 问题类型 | Cypher 模板 |
+|---------|---------|------------|
+| `CALL_CHAIN` | "谁调用了 {method}?" | `MATCH (m:Method {name: $method}) MATCH (caller:Method)-[:CALLS]->(m) RETURN caller` |
+| `IMPACT_ANALYSIS` | "修改 {method} 会影响什么?" | `MATCH (m:Method {name: $method}) MATCH (m)-[:CALLS*1..5]->(affected:Method) RETURN affected` |
+| `AUTHOR_TRACE` | "{method} 最后是谁修改的?" | `MATCH (m:Method {name: $method}) MATCH (m)-[:LAST_MODIFIED_BY]->(c:Commit) MATCH (c)-[:AUTHORED_BY]->(a:Author) RETURN c, a` |
+| `SERVICE_DEPS` | "{service} 依赖哪些服务?" | `MATCH (s:Service {name: $service}) MATCH (s)-[:CONTAINS]->(:Class)-[:HAS_METHOD]->(:Method)-[:CALLS]->(:Method)<-[:HAS_METHOD]-(c:Class)<-[:CONTAINS]-(dep:Service) RETURN DISTINCT dep` |
+| `CLASS_METHODS` | "{class} 有哪些方法?" | `MATCH (c:Class {name: $class}) MATCH (c)-[:HAS_METHOD]->(m:Method) RETURN m` |
+| `METHOD_HISTORY` | "{method} 的修改历史?" | `MATCH (m:Method {name: $method}) MATCH (m)-[:MODIFIED_BY]->(c:Commit) RETURN c ORDER BY c.authoredAt DESC` |
+
+### 7.3 Cypher 生成安全规则
+
+```java
+public class CypherValidator {
+    // 只允许的语句类型
+    private static final Set<String> ALLOWED_STATEMENTS = Set.of("MATCH", "RETURN", "WHERE", "WITH", "OPTIONAL", "ORDER", "LIMIT", "SKIP");
+
+    // 禁止的关键字
+    private static final Set<String> FORBIDDEN_KEYWORDS = Set.of("CREATE", "DELETE", "SET", "MERGE", "REMOVE", "DROP", "CALL");
+
+    public static void validate(String cypher) {
+        String upperCypher = cypher.toUpperCase();
+        for (String forbidden : FORBIDDEN_KEYWORDS) {
+            if (upperCypher.contains(forbidden)) {
+                throw new SecurityException("Cypher 包含禁止的操作: " + forbidden);
+            }
+        }
+    }
+}
+```
+
+---
+
+## 八、核心模块设计
+
+### 8.1 解析模块 (ParseService)
+
+**职责**: 从代码仓库构建知识图谱
+
+**流程**:
+```
+用户导入项目 → Git Clone → MCP Client 调用 codegraph 解析
+            → Git Log 解析提交历史 → 批量写入 Neo4j → 完成
+```
+
+**核心功能**:
+- Git 仓库克隆与本地缓存
+- 通过 MCP Client 调用 codegraph 解析代码结构
+- 解析 Git 提交历史，关联代码节点
+- codegraph 输出转换为 Neo4j 节点/关系
+- 批量写入 Neo4j 图数据库
+- (可选) LLM 业务语义推断
+
+### 8.2 问答模块 (QAService)
+
+**职责**: 实现 GraphRAG 问答
+
+**核心类设计**:
+```java
+@Service
+public class QAService {
+
+    private final IntentClassifier intentClassifier;      // Step 1: 问题理解
+    private final QueryTemplateMatcher templateMatcher;   // Step 2: 模板匹配
+    private final CypherGenerator cypherGenerator;        // Step 2b: Cypher 生成
+    private final Neo4jExecutor neo4jExecutor;            // Step 3: 执行查询
+    private final ContextBuilder contextBuilder;          // Step 4: 上下文构建
+    private final AnswerGenerator answerGenerator;        // Step 5: 答案生成
+
+    public QAResponse ask(String question, Long projectId) {
+        // Step 1: 问题理解
+        IntentResult intent = intentClassifier.classify(question);
+
+        // Step 2: 查询模板匹配或 Cypher 生成
+        String cypher = templateMatcher.match(intent)
+            .orElseGet(() -> cypherGenerator.generate(intent, getSchema(projectId)));
+
+        // Step 3: 执行查询
+        GraphResult graphResult = neo4jExecutor.execute(cypher, projectId);
+
+        // Step 4: 构建上下文
+        String context = contextBuilder.build(graphResult, projectId);
+
+        // Step 5: 生成答案
+        return answerGenerator.generate(question, context);
+    }
+}
+```
+
+### 8.3 项目模块 (ProjectService)
+
+**职责**: 项目管理与解析任务调度
+
+**数据模型**:
+```java
+@Entity
+public class Project {
+    private Long id;
+    private String name;
+    private String gitUrl;
+    private String branch;
+    private Long credentialId;
+    private String language;
+    private String parseScope;
+    private ProjectStatus status;  // PENDING/PARSING/READY/ERROR
+    private LocalDateTime lastParsedAt;
+    private String webhookSecret;
+    private String localPath;  // 本地仓库路径
+}
+
+@Entity
+public class ParseTask {
+    private Long id;
+    private Long projectId;
+    private ParseType type;        // FULL/INCREMENTAL
+    private ParseStatus status;    // RUNNING/COMPLETED/FAILED
+    private Integer progress;
+    private LocalDateTime startedAt;
+    private LocalDateTime completedAt;
+    private String errorMessage;
+}
+```
+
+### 8.4 用户模块 (UserService)
+
+**职责**: 用户认证与会话管理
+
+**数据模型**:
+```java
+@Entity
+public class User {
+    private Long id;
+    private String username;
+    private String password;  // BCrypt 加密
+    private String email;
+    private LocalDateTime createdAt;
+}
+
+@Entity
+public class ChatSession {
+    private Long id;
+    private Long userId;
+    private Long projectId;
+    private String title;
+    private LocalDateTime createdAt;
+}
+
+@Entity
+public class Message {
+    private Long id;
+    private Long sessionId;
+    private MessageRole role;  // USER/ASSISTANT
+    private String content;
+    private String citations;  // JSON: [{file, line, snippet}]
+    private LocalDateTime createdAt;
+}
+```
+
+### 8.5 LLM 适配层
+
+**职责**: 统一 LLM 调用接口，支持多模型切换
+
+**架构**:
+```
+LlmService (统一接口)
+    │
+    ▼
+LlmProviderFactory
+    │
+    ├── OpenAI Provider
+    ├── Azure OpenAI Provider
+    ├── Ollama Provider
+    ├── 通义千问 Provider (DashScope)
+    ├── 文心一言 Provider
+    └── DeepSeek Provider
+```
+
+**配置模型**:
+```java
+@ConfigurationProperties(prefix = "llm")
+public class LlmConfig {
+    private String provider;      // openai/azure/ollama/qwen/deepseek
+    private String model;         // gpt-4/qwen-max/deepseek-chat
+    private String apiKey;
+    private String baseUrl;       // 自定义端点
+    private Double temperature;
+    private Integer maxTokens;
+}
+```
+
+---
+
+## 九、代码文件加载策略（新增）
+
+### 9.1 加载策略选择
+
+| 策略 | 说明 | 适用场景 |
+|------|------|---------|
+| **本地仓库直接读取** | 后端 clone 到本地，直接读取文件 | MVP 阶段推荐 |
+| MinIO/S3 缓存 | 解析时同步到对象存储 | 多实例部署 |
+| Git API 获取 | 调用 GitLab/GitHub API | 历史版本查看 |
+
+**MVP 推荐**: 本地仓库直接读取 + Git API 查看历史版本
+
+### 9.2 API 设计
+
+```
+# 获取文件内容
+GET /api/projects/{projectId}/files/{filePath}
+参数:
+  - startLine: 起始行 (可选)
+  - endLine: 结束行 (可选)
+  - ref: Git 引用/commit hash (可选，默认当前分支)
+
+响应:
+{
+  "path": "src/main/java/OrderService.java",
+  "language": "java",
+  "totalLines": 500,
+  "content": "...",
+  "startLine": 1,
+  "endLine": 200
+}
+```
+
+### 9.3 大文件处理策略
+
+| 文件大小 | 处理方式 |
+|---------|---------|
+| < 100KB | 全量加载 |
+| 100KB - 500KB | 分段加载，启用虚拟滚动 |
+| > 500KB | 警告提示，按需加载可见区域 |
+
+**Monaco Editor 配置**:
+```typescript
+// 大文件优化配置
+const editorOptions = {
+  minimap: { enabled: false },           // 禁用 minimap
+  foldingMaximumRegions: 5000,           // 限制折叠区域
+  largeFileOptimizations: true,          // 启用大文件优化
+  wordWrap: 'on',                        // 自动换行
+  scrollBeyondLastLine: false,
+};
+```
+
+### 9.4 代码定位跳转
+
+```
+用户点击来源链接
+    │
+    ▼
+前端请求: GET /api/projects/{id}/files/{path}?startLine={line}&endLine={line+50}
+    │
+    ▼
+后端读取本地仓库文件，返回目标行附近的代码
+    │
+    ▼
+Monaco Editor 渲染并滚动到目标行
+```
+
+---
+
+## 十、代码同步策略
+
+### 10.1 同步触发源
+
+| 优先级 | 方式 | 说明 |
+|--------|------|------|
+| 1 | Webhook 自动 | GitLab/GitHub Push Event 触发 |
+| 2 | 定时增量 | 定时检查远程是否有新提交 |
+| 3 | 手动触发 | 用户点击"重新解析" |
+
+### 10.2 增量解析策略
+
+```
+1. 获取变更文件: git diff --name-only oldCommit..newCommit
+2. 分类处理:
+   - 新增文件 → 解析并创建节点
+   - 修改文件 → 解析并更新节点（保留历史）
+   - 删除文件 → 标记节点为已删除
+3. 影响范围分析 → 重新解析受影响的调用关系
+4. 更新图谱 → 写入 Neo4j
+```
+
+### 10.3 Webhook 支持
+
+| 平台 | Event | 验证方式 |
+|------|-------|---------|
+| GitLab | Push Events, Merge Request Events | Secret Token |
+| GitHub | push, pull_request | HMAC SHA256 |
+| Gitee | Push, Pull Request | Secret Token |
+
+---
+
+## 十一、前端设计
+
+### 11.1 页面布局
+
+```
+┌───────────────────────────────────────────────────────────┐
+│ 侧边栏 │              主内容区                              │
+│        │                                                   │
+│ 项目列表│    根据功能切换:                                   │
+│ ├ 订单系统│    - 对话界面                                    │
+│ ├ 支付系统│    - 图谱可视化                                  │
+│ └ 库存系统│    - 代码查看器                                  │
+│        │                                                   │
+│ 历史对话│                                                   │
+│ 设置   │                                                   │
+└────────┘                                                   │
+```
+
+### 11.2 功能模块
+
+| 模块 | 技术 | 功能 |
+|------|------|------|
+| 对话界面 | - | Markdown 渲染、代码高亮、来源链接、流式输出 |
+| 图谱可视化 | D3.js/ECharts | 节点拖拽、缩放、搜索、路径高亮 |
+| 代码查看器 | Monaco Editor | 语法高亮、行号、定位跳转、文件树、大文件优化 |
+| 项目管理 | - | 项目列表、导入、状态监控、Webhook 配置 |
+
+---
+
+## 十二、分阶段交付计划
+
+| 阶段 | 内容 | 周期 | 核心交付物 |
+|------|------|------|-----------|
+| **阶段一** | MVP 核心功能 | 3-4 周 | 可用问答系统 |
+| **阶段二** | 体验增强 | 2-3 周 | 可视化 + 代码定位 |
+| **阶段三** | 自动化与扩展 | 2-3 周 | Webhook + 业务语义 |
+| **阶段四** | 生产就绪 | 1-2 周 | Docker 部署 + 文档 |
+
+**总计: 8-12 周**
+
+### 阶段一: MVP 核心功能
+
+- [ ] 后端基础框架 (Spring Boot 3.x + Neo4j + PostgreSQL + Redis)
+- [ ] 用户认证 (JWT)
+- [ ] 项目管理 CRUD
+- [ ] Git 仓库克隆与本地缓存
+- [ ] MCP Client 封装，调用 codegraph 解析代码
+- [ ] codegraph 输出 → Neo4j 转换逻辑
+- [ ] Git 提交历史解析，写入溯源节点
+- [ ] LLM 适配层 (单模型)
+- [ ] 预定义查询模板 (6种基础模板)
+- [ ] GraphRAG 五步流水线实现
+- [ ] 前端基础 (Vue3 + 登录 + 项目列表 + 简单对话)
+
+### 阶段二: 体验增强
+
+- [ ] 图谱可视化 (D3.js/ECharts)
+- [ ] 代码查看器 (Monaco Editor + 大文件优化)
+- [ ] 来源引用与代码定位跳转
+- [ ] 对话历史保存
+- [ ] 流式输出
+- [ ] 多 LLM 支持 (OpenAI/Azure/通义/Ollama)
+
+### 阶段三: 自动化与扩展
+
+- [ ] Webhook 自动触发
+- [ ] 定时增量同步
+- [ ] 手动触发全量/增量解析
+- [ ] 业务语义层 (LLM 推断 Domain/Flow/Entity)
+- [ ] 自然语言生成 Cypher (含安全验证)
+- [ ] 高级查询模板
+
+### 阶段四: 生产就绪
+
+- [ ] Docker Compose 编排
+- [ ] 性能优化 (大型仓库解析、图谱查询)
+- [ ] 用户手册
+- [ ] 部署文档
+- [ ] API 文档
+
+---
+
+## 十三、附录
+
+### 13.1 GraphRAG 查询示例
+
+```cypher
+// 问题: "订单下单流程有哪些步骤？"
+MATCH (flow:BusinessFlow {name: '订单下单'})
+MATCH (step:BusinessStep)-[:PART_OF_FLOW]->(flow)
+MATCH (method:Method)-[:IMPLEMENTS_FLOW]->(step)
+OPTIONAL MATCH (method)-[:CALLS]->(called:Method)
+RETURN flow, step, method, called
+ORDER BY step.order
+
+// 问题: "createOrder 方法最后是谁修改的？"
+MATCH (m:Method {name: 'createOrder'})
+MATCH (m)-[:LAST_MODIFIED_BY]->(c:Commit)
+MATCH (c)-[:AUTHORED_BY]->(a:Author)
+RETURN m.name, c.message, c.authoredAt, a.name, a.email
+
+// 问题: "张三最近提交了哪些代码？"
+MATCH (a:Author {name: '张三'})
+MATCH (c:Commit)-[:AUTHORED_BY]->(a)
+MATCH (node)-[:MODIFIED_BY]->(c)
+WHERE c.authoredAt > datetime() - duration('P30D')
+RETURN c, node
+ORDER BY c.authoredAt DESC
+```
+
+### 13.2 技术依赖
+
+**后端**:
+```xml
+<!-- Spring Boot -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+
+<!-- Neo4j -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-data-neo4j</artifactId>
+</dependency>
+
+<!-- MCP Java SDK -->
+<dependency>
+    <groupId>io.github.modelcontextprotocol</groupId>
+    <artifactId>mcp-java</artifactId>
+    <version>0.5.0</version>
+</dependency>
+
+<!-- LangChain4j -->
+<dependency>
+    <groupId>dev.langchain4j</groupId>
+    <artifactId>langchain4j</artifactId>
+</dependency>
+<dependency>
+    <groupId>dev.langchain4j</groupId>
+    <artifactId>langchain4j-open-ai</artifactId>
+</dependency>
+```
+
+**前端**:
+```json
+{
+  "dependencies": {
+    "vue": "^3.4.0",
+    "pinia": "^2.1.0",
+    "element-plus": "^2.5.0",
+    "d3": "^7.8.0",
+    "monaco-editor": "^0.45.0",
+    "axios": "^1.6.0"
+  }
+}
+```
+
+---
+
+## 十四、技术验证任务（阶段一前置，新增）
+
+### 14.1 验证任务列表
+
+在正式开发阶段一之前，需要完成以下技术验证：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   技术验证任务 (P0)                          │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  TV-01: MCP Java SDK 验证                                   │
+│  ─────────────────────────────────────────────────────────  │
+│  目标: 验证 Java 后端调用 codegraph MCP 的可行性             │
+│                                                             │
+│  验证步骤:                                                   │
+│  1. 创建测试 Spring Boot 项目                               │
+│  2. 引入 MCP Java SDK 依赖 (或自建 stdio 封装)              │
+│  3. 启动 codegraph MCP Server 作为子进程                    │
+│  4. 调用 codegraph_files, codegraph_explore 工具           │
+│  5. 解析返回的 JSON 数据                                    │
+│                                                             │
+│  验证点:                                                     │
+│  • SDK 是否存在且可用？                                     │
+│  • stdio 通信是否稳定？                                     │
+│  • 返回数据结构是否包含必要字段？                            │
+│                                                             │
+│  备选方案:                                                   │
+│  • 若 SDK 不可用，自建 ProcessBuilder + stdio 封装          │
+│  • 使用 Python 脚本作为中间层调用 MCP，Java 调用 Python      │
+│                                                             │
+│  预计时间: 1-2 天                                           │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  TV-02: codegraph 输出格式验证                              │
+│  ─────────────────────────────────────────────────────────  │
+│  目标: 确认 codegraph 返回的数据结构                         │
+│                                                             │
+│  验证步骤:                                                   │
+│  1. 准备一个示例 Java 项目 (Spring Boot)                    │
+│  2. 使用 codegraph 解析该项目                               │
+│  3. 分析输出 JSON 的完整结构                                │
+│  4. 确认是否包含: startLine, endLine, signature, returnType │
+│                                                             │
+│  预期输出结构:                                               │
+│  {                                                          │
+│    "nodes": [{                                              │
+│      "id": "string",                                        │
+│      "type": "class|method|field|...",                      │
+│      "name": "string",                                      │
+│      "file": "string",                                      │
+│      "line": number,                                        │
+│      "endLine": number,        // 是否存在？                │
+│      "signature": "string",    // 方法签名是否存在？         │
+│      "returnType": "string"    // 返回类型是否存在？         │
+│    }],                                                      │
+│    "edges": [{                                              │
+│      "from": "string",                                      │
+│      "to": "string",                                        │
+│      "type": "calls|extends|implements|..."                 │
+│    }]                                                       │
+│  }                                                          │
+│                                                             │
+│  预计时间: 0.5 天                                           │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  TV-03: Neo4j 批量写入性能验证                              │
+│  ─────────────────────────────────────────────────────────  │
+│  目标: 确认大规模图谱写入的性能                              │
+│                                                             │
+│  验证步骤:                                                   │
+│  1. 创建 Neo4j 测试实例                                     │
+│  2. 批量写入 10 万节点 + 50 万关系                          │
+│  3. 测试写入耗时                                            │
+│  4. 测试带索引 vs 无索引的性能差异                          │
+│                                                             │
+│  验证指标:                                                   │
+│  • 10 万节点写入时间 < 5 分钟                               │
+│  • 索引对写入性能影响 < 20%                                 │
+│                                                             │
+│  预计时间: 0.5 天                                           │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  TV-04: GraphRAG 端到端验证                                 │
+│  ─────────────────────────────────────────────────────────  │
+│  目标: 验证 GraphRAG 流程可行性                              │
+│                                                             │
+│  验证步骤:                                                   │
+│  1. 在 Neo4j 中导入测试图谱数据                             │
+│  2. 使用 LangChain4j 调用 LLM                               │
+│  3. 实现简单的问题理解 + Cypher 执行 + 答案生成             │
+│                                                             │
+│  验证点:                                                     │
+│  • 问题理解准确率                                           │
+│  • Cypher 查询正确性                                        │
+│  • 答案生成质量                                             │
+│                                                             │
+│  预计时间: 1 天                                             │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+
+技术验证总计: 3-4 天
+```
+
+---
+
+## 十五、Neo4j 索引设计（新增）
+
+### 15.1 必要索引
+
+```cypher
+// 节点属性索引
+CREATE INDEX method_name_idx IF NOT EXISTS FOR (m:Method) ON (m.name);
+CREATE INDEX method_file_idx IF NOT EXISTS FOR (m:Method) ON (m.filePath);
+CREATE INDEX class_name_idx IF NOT EXISTS FOR (c:Class) ON (c.name);
+CREATE INDEX class_fullname_idx IF NOT EXISTS FOR (c:Class) ON (c.fullName);
+CREATE INDEX service_name_idx IF NOT EXISTS FOR (s:Service) ON (s.name);
+CREATE INDEX package_path_idx IF NOT EXISTS FOR (p:Package) ON (p.path);
+
+// 溯源索引
+CREATE INDEX commit_hash_idx IF NOT EXISTS FOR (c:Commit) ON (c.hash);
+CREATE INDEX author_email_idx IF NOT EXISTS FOR (a:Author) ON (a.email);
+CREATE INDEX author_name_idx IF NOT EXISTS FOR (a:Author) ON (a.name);
+
+// 业务语义索引
+CREATE INDEX domain_name_idx IF NOT EXISTS FOR (d:Domain) ON (d.name);
+CREATE INDEX flow_name_idx IF NOT EXISTS FOR (f:BusinessFlow) ON (f.name);
+CREATE INDEX entity_name_idx IF NOT EXISTS FOR (e:Entity) ON (e.name);
+
+// 项目索引
+CREATE INDEX project_name_idx IF NOT EXISTS FOR (p:Project) ON (p.name);
+```
+
+### 15.2 复合索引（可选）
+
+```cypher
+// 方法名 + 文件路径复合索引（用于精确定位）
+CREATE INDEX method_name_file_idx IF NOT EXISTS FOR (m:Method) ON (m.name, m.filePath);
+
+// 提交时间索引（用于时间范围查询）
+CREATE INDEX commit_time_idx IF NOT EXISTS FOR (c:Commit) ON (c.authoredAt);
+```
+
+### 15.3 索引初始化脚本
+
+```java
+@Component
+public class Neo4jIndexInitializer implements ApplicationRunner {
+
+    private final Neo4jClient neo4jClient;
+
+    private static final List<String> INDEX_SCRIPTS = List.of(
+        "CREATE INDEX method_name_idx IF NOT EXISTS FOR (m:Method) ON (m.name)",
+        "CREATE INDEX class_name_idx IF NOT EXISTS FOR (c:Class) ON (c.name)",
+        "CREATE INDEX commit_hash_idx IF NOT EXISTS FOR (c:Commit) ON (c.hash)",
+        "CREATE INDEX author_email_idx IF NOT EXISTS FOR (a:Author) ON (a.email)"
+        // ... 其他索引
+    );
+
+    @Override
+    public void run(ApplicationArguments args) {
+        INDEX_SCRIPTS.forEach(script -> {
+            neo4jClient.query(script).run();
+        });
+    }
+}
+```
+
+---
+
+## 十六、模板匹配规则详细设计（新增）
+
+### 16.1 问题类型识别规则
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                 问题类型识别规则                              │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  规则优先级: 从上到下依次匹配                                 │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ CALL_CHAIN (调用链查询)                              │   │
+│  │ ─────────────────────────────────────────────────── │   │
+│  │ 关键词: "谁调用了", "哪些地方调用", "调用者",          │   │
+│  │        "哪里调用了", "被谁调用"                       │   │
+│  │ 示例: "谁调用了 createOrder 方法？"                  │   │
+│  │ 模板: CALL_CHAIN                                     │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ IMPACT_ANALYSIS (影响分析)                           │   │
+│  │ ─────────────────────────────────────────────────── │   │
+│  │ 关键词: "会影响", "影响范围", "依赖哪些",              │   │
+│  │        "修改...影响", "会波及"                        │   │
+│  │ 示例: "修改 createOrder 会影响什么？"                │   │
+│  │ 模板: IMPACT_ANALYSIS                                │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ AUTHOR_TRACE (代码溯源)                              │   │
+│  │ ─────────────────────────────────────────────────── │   │
+│  │ 关键词: "谁修改", "谁写的", "谁提交", "谁开发",        │   │
+│  │        "最后修改", "作者", "谁实现"                   │   │
+│  │ 示例: "createOrder 方法最后是谁修改的？"             │   │
+│  │ 模板: AUTHOR_TRACE                                   │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ CLASS_METHODS (类方法查询)                           │   │
+│  │ ─────────────────────────────────────────────────── │   │
+│  │ 关键词: "有哪些方法", "方法列表", "包含哪些方法",      │   │
+│  │        "都有什么方法"                                 │   │
+│  │ 示例: "OrderService 类有哪些方法？"                  │   │
+│  │ 模板: CLASS_METHODS                                  │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ METHOD_HISTORY (修改历史)                            │   │
+│  │ ─────────────────────────────────────────────────── │   │
+│  │ 关键词: "修改历史", "提交记录", "变更历史",            │   │
+│  │        "git历史", "改动记录"                          │   │
+│  │ 示例: "createOrder 方法的修改历史？"                 │   │
+│  │ 模板: METHOD_HISTORY                                 │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ SERVICE_DEPS (服务依赖)                              │   │
+│  │ ─────────────────────────────────────────────────── │   │
+│  │ 关键词: "依赖哪些服务", "服务依赖", "依赖什么服务",    │   │
+│  │        "调用了哪些服务"                               │   │
+│  │ 示例: "订单服务依赖哪些服务？"                       │   │
+│  │ 模板: SERVICE_DEPS                                   │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│  无匹配 → 走 LLM 生成 Cypher                                │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 16.2 实体提取规则
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   实体提取规则                                │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  提取优先级: 从上到下依次尝试                                 │
+│                                                             │
+│  1. 引号内容提取                                             │
+│     ─────────────────────────────────────────────────────  │
+│     规则: 匹配 "xxx" 或 「xxx」 中的内容                     │
+│     示例: "createOrder" → createOrder                       │
+│     类型: 方法名/类名                                        │
+│                                                             │
+│  2. 中文+标识符模式                                          │
+│     ─────────────────────────────────────────────────────  │
+│     规则: 匹配 "标识符 + 方法/类/服务" 或 "方法/类 + 标识符"  │
+│     示例: createOrder方法 → createOrder (方法)              │
+│     示例: OrderService类 → OrderService (类)                │
+│     示例: 订单服务 → 订单服务 (服务名)                       │
+│                                                             │
+│  3. 人名识别                                                 │
+│     ─────────────────────────────────────────────────────  │
+│     规则: 匹配 2-4 个中文字符的人名模式                      │
+│     示例: 张三提交了哪些代码 → 张三 (作者)                   │
+│     白名单: 常见姓氏 + 人名词库                              │
+│                                                             │
+│  4. 服务名识别                                               │
+│     ─────────────────────────────────────────────────────  │
+│     规则: 匹配 "xxx服务" 模式                               │
+│     示例: 订单服务 → 订单服务 (服务名)                       │
+│                                                             │
+│  5. LLM 辅助提取                                             │
+│     ─────────────────────────────────────────────────────  │
+│     当规则提取失败时，调用 LLM 进行实体识别                  │
+│     Prompt: "从以下问题中提取代码实体（类名、方法名、人名）  │
+│              返回 JSON 格式: {entities: [{name, type}]}"   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 16.3 模板匹配实现
+
+```java
+@Component
+public class QueryTemplateMatcher {
+
+    private final List<QueryTemplate> templates;
+
+    @PostConstruct
+    public void init() {
+        templates = List.of(
+            QueryTemplate.builder()
+                .id("CALL_CHAIN")
+                .keywords(List.of("谁调用了", "哪些地方调用", "调用者", "哪里调用了"))
+                .cypher("MATCH (m:Method {name: $entity}) " +
+                        "MATCH (caller:Method)-[:CALLS]->(m) " +
+                        "RETURN caller.name, caller.filePath, caller.startLine")
+                .entityType("method")
+                .build(),
+
+            QueryTemplate.builder()
+                .id("IMPACT_ANALYSIS")
+                .keywords(List.of("会影响", "影响范围", "修改.*影响", "会波及"))
+                .cypher("MATCH (m:Method {name: $entity}) " +
+                        "MATCH (m)-[:CALLS*1..5]->(affected:Method) " +
+                        "RETURN DISTINCT affected.name, affected.filePath")
+                .entityType("method")
+                .build(),
+
+            QueryTemplate.builder()
+                .id("AUTHOR_TRACE")
+                .keywords(List.of("谁修改", "谁写的", "谁提交", "最后修改", "作者"))
+                .cypher("MATCH (m:Method {name: $entity}) " +
+                        "MATCH (m)-[:LAST_MODIFIED_BY]->(c:Commit) " +
+                        "MATCH (c)-[:AUTHORED_BY]->(a:Author) " +
+                        "RETURN c.message, c.authoredAt, a.name, a.email")
+                .entityType("method")
+                .build()
+
+            // ... 其他模板
+        );
+    }
+
+    public Optional<MatchedTemplate> match(IntentResult intent) {
+        String question = intent.getQuestion().toLowerCase();
+
+        for (QueryTemplate template : templates) {
+            for (String keyword : template.getKeywords()) {
+                if (question.contains(keyword)) {
+                    // 提取实体
+                    String entity = extractEntity(question, template.getEntityType());
+                    if (entity != null) {
+                        return Optional.of(new MatchedTemplate(
+                            template.getId(),
+                            template.getCypher(),
+                            entity
+                        ));
+                    }
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    private String extractEntity(String question, String entityType) {
+        // 1. 引号提取
+        Pattern quotePattern = Pattern.compile("[\"「]([^\"」]+)[\"」]");
+        Matcher matcher = quotePattern.matcher(question);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+
+        // 2. 中文+标识符模式
+        Pattern methodPattern = Pattern.compile("(\\w+)方法");
+        Matcher methodMatcher = methodPattern.matcher(question);
+        if (methodMatcher.find()) {
+            return methodMatcher.group(1);
+        }
+
+        // 3. 其他规则...
+
+        return null;
+    }
+}
+```
+
+---
+
+## 十七、Cypher 生成 Prompt 设计（新增）
+
+### 17.1 Schema 提供给 LLM
+
+```
+你是 Neo4j Cypher 查询专家。根据用户问题和图谱 Schema，生成 Cypher 查询语句。
+
+## 图谱 Schema
+
+### 节点类型
+- Project: {id, name, gitUrl, branch}
+- Service: {id, name, fullName}
+- Class: {id, name, fullName, type, filePath}
+- Method: {id, name, signature, returnType, filePath, startLine, endLine}
+- Field: {id, name, type}
+- Commit: {id, hash, message, authoredAt}
+- Author: {id, name, email}
+- Domain: {id, name, description}
+- BusinessFlow: {id, name, description}
+
+### 关系类型
+- (Project)-[:CONTAINS]->(Service)
+- (Service)-[:CONTAINS]->(Class)
+- (Class)-[:HAS_METHOD]->(Method)
+- (Class)-[:HAS_FIELD]->(Field)
+- (Method)-[:CALLS]->(Method)
+- (Class)-[:EXTENDS]->(Class)
+- (Class)-[:IMPLEMENTS]->(Class)
+- (Method)-[:LAST_MODIFIED_BY]->(Commit)
+- (Commit)-[:AUTHORED_BY]->(Author)
+- (Method)-[:MODIFIED_BY]->(Commit)
+
+### 索引
+- Method.name, Class.name, Commit.hash, Author.email 已建立索引
+
+## 规则
+1. 只允许使用 MATCH, RETURN, WHERE, WITH, OPTIONAL, ORDER BY, LIMIT, SKIP
+2. 禁止使用 CREATE, DELETE, SET, MERGE, REMOVE, DROP, CALL
+3. 使用参数化查询: $paramName
+4. 优先使用索引字段进行查询
+5. 对于多跳查询，限制深度 (如 *1..5)
+
+## 示例
+
+用户问题: "OrderService 类中哪些方法调用了数据库？"
+Cypher:
+```cypher
+MATCH (c:Class {name: 'OrderService'})-[:HAS_METHOD]->(m:Method)
+WHERE m.name CONTAINS 'Repository' OR m.name CONTAINS 'Dao'
+RETURN m.name, m.filePath
+```
+
+用户问题: {question}
+Cypher:
+```
+
+### 17.2 Cypher 生成服务
+
+```java
+@Service
+public class CypherGenerator {
+
+    private static final String SCHEMA_PROMPT = """
+        你是 Neo4j Cypher 查询专家...
+        (完整 Schema Prompt)
+        """;
+
+    private final ChatLanguageModel llm;
+
+    public String generate(IntentResult intent, GraphSchema schema) {
+        String prompt = SCHEMA_PROMPT
+            .replace("{schema}", formatSchema(schema))
+            .replace("{question}", intent.getQuestion());
+
+        String cypher = llm.generate(prompt);
+
+        // 安全验证
+        CypherValidator.validate(cypher);
+
+        return cypher;
+    }
+}
+```
+
+---
+
+## 十八、资源需求预估（新增）
+
+### 18.1 部署资源需求
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   资源需求预估 (MVP)                         │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  组件          │ CPU    │ 内存    │ 存储        │ 说明      │
+│  ─────────────────────────────────────────────────────────  │
+│  Neo4j         │ 2 核   │ 4 GB   │ 50 GB SSD   │ 图谱存储  │
+│  PostgreSQL    │ 1 核   │ 1 GB   │ 10 GB SSD   │ 业务数据  │
+│  Redis         │ 1 核   │ 512 MB │ -           │ 缓存      │
+│  Spring Boot   │ 2 核   │ 2 GB   │ -           │ 后端服务  │
+│  Vue3 前端     │ 1 核   │ 512 MB │ -           │ 静态资源  │
+│  Git 仓库缓存  │ -      │ -      │ 20-100 GB   │ 代码存储  │
+│  ─────────────────────────────────────────────────────────  │
+│  总计 (最小)    │ 7 核   │ 8 GB   │ 80+ GB SSD  │           │
+│  推荐生产配置   │ 8 核   │ 16 GB  │ 200 GB SSD  │           │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 18.2 Docker Compose 资源配置
+
+```yaml
+services:
+  neo4j:
+    image: neo4j:5.15
+    environment:
+      - NEO4J_dbms_memory_heap_initial__size=1G
+      - NEO4J_dbms_memory_heap_max__size=2G
+      - NEO4J_dbms_memory_pagecache_size=1G
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+
+  postgres:
+    image: postgres:15
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+
+  redis:
+    image: redis:7
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
+  backend:
+    build: ./backend
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+
+  frontend:
+    build: ./frontend
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+```
+
+---
+
+## 十九、调整后的交付计划（更新）
+
+### 19.1 调整说明
+
+根据第二轮评审，对交付计划进行调整：
+
+| 调整项 | 原计划 | 调整后 | 原因 |
+|--------|--------|--------|------|
+| 技术验证 | 无 | +3-4 天 | MCP SDK 和 codegraph 输出需验证 |
+| 阶段一 | 3-4 周 | 4-5 周 | 增加缓冲时间 |
+| 阶段三 | 2-3 周 | 拆分为两个子阶段 | 业务语义推断有不确定性 |
+
+### 19.2 更新后的阶段划分
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   更新后的交付计划                           │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  阶段零: 技术验证 (新增)                                     │
+│  ─────────────────────────────────────────────────────────  │
+│  周期: 3-4 天                                               │
+│  内容:                                                      │
+│  • TV-01: MCP Java SDK 验证                                 │
+│  • TV-02: codegraph 输出格式验证                            │
+│  • TV-03: Neo4j 批量写入性能验证                            │
+│  • TV-04: GraphRAG 端到端验证                               │
+│  交付物: 技术验证报告、可行性确认                            │
+│                                                             │
+│  阶段一: MVP 核心功能                                        │
+│  ─────────────────────────────────────────────────────────  │
+│  周期: 4-5 周 (原 3-4 周)                                   │
+│  内容:                                                      │
+│  • 后端基础框架 + Neo4j 索引初始化                          │
+│  • 用户认证 (JWT)                                           │
+│  • 项目管理 CRUD                                            │
+│  • Git 仓库克隆与本地缓存                                   │
+│  • MCP Client 封装 + codegraph 解析                         │
+│  • codegraph 输出 → Neo4j 转换逻辑                          │
+│  • Git 提交历史解析，写入溯源节点                            │
+│  • LLM 适配层 (单模型)                                      │
+│  • 预定义查询模板 + 模板匹配规则                             │
+│  • GraphRAG 五步流水线实现                                  │
+│  • 前端基础 (Vue3 + 登录 + 项目列表 + 简单对话)              │
+│  交付物: 可用的问答系统                                      │
+│                                                             │
+│  阶段二: 体验增强                                            │
+│  ─────────────────────────────────────────────────────────  │
+│  周期: 2-3 周 (不变)                                        │
+│  内容:                                                      │
+│  • 图谱可视化 (D3.js/ECharts)                               │
+│  • 代码查看器 (Monaco Editor + 大文件优化)                   │
+│  • 来源引用与代码定位跳转                                    │
+│  • 对话历史保存                                             │
+│  • 流式输出                                                 │
+│  • 多 LLM 支持                                              │
+│  交付物: 完整的前端体验                                      │
+│                                                             │
+│  阶段三-A: 自动化同步                                        │
+│  ─────────────────────────────────────────────────────────  │
+│  周期: 1-2 周                                               │
+│  内容:                                                      │
+│  • Webhook 自动触发                                         │
+│  • 定时增量同步                                             │
+│  • 手动触发全量/增量解析                                    │
+│  交付物: 自动化同步能力                                      │
+│                                                             │
+│  阶段三-B: 业务语义扩展 (可选)                               │
+│  ─────────────────────────────────────────────────────────  │
+│  周期: 1-2 周                                               │
+│  内容:                                                      │
+│  • 业务语义层 (LLM 推断 Domain/Flow/Entity)                 │
+│  • 自然语言生成 Cypher (含安全验证)                          │
+│  • 高级查询模板                                             │
+│  交付物: 业务语义问答能力                                    │
+│  注意: 此阶段可根据实际需求决定是否实施                      │
+│                                                             │
+│  阶段四: 生产就绪                                            │
+│  ─────────────────────────────────────────────────────────  │
+│  周期: 1-2 周 (不变)                                        │
+│  内容:                                                      │
+│  • Docker Compose 编排                                      │
+│  • 性能优化 (大型仓库解析、图谱查询)                          │
+│  • 用户手册、部署文档、API 文档                              │
+│  交付物: 可部署的生产版本                                    │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+
+总计: 9-13 周 (含技术验证)
+```
+
+---
+
+## 二十、安全性设计（新增）
+
+### 20.1 Git 凭证安全存储
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   Git 凭证安全存储方案                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  加密方案: AES-256-GCM                                       │
+│  ─────────────────────────────────────────────────────────  │
+│  • 加密算法: AES-256-GCM (带认证的加密模式)                  │
+│  • 密钥来源: 环境变量 APP_ENCRYPTION_KEY 或 HashiCorp Vault  │
+│  • 密钥长度: 256 bits (32 bytes)                            │
+│  • IV 生成: 每次加密生成随机 12 bytes IV                     │
+│  • 存储格式: Base64(IV + ciphertext + authTag)              │
+│                                                             │
+│  数据模型:                                                   │
+│  @Entity                                                    │
+│  public class GitCredential {                               │
+│      private Long id;                                       │
+│      private String name;                                   │
+│      private CredentialType type;  // PASSWORD/TOKEN/SSH   │
+│      @JdbcTypeCode(SqlTypes.VARCHAR)                       │
+│      @Column(columnDefinition = "TEXT")                    │
+│      private String encryptedValue;  // 加密后的凭证        │
+│      private LocalDateTime createdAt;                       │
+│      private LocalDateTime updatedAt;                       │
+│  }                                                          │
+│                                                             │
+│  加密服务:                                                   │
+│  @Service                                                    │
+│  public class EncryptionService {                           │
+│      private final SecretKey secretKey;                     │
+│                                                             │
+│      public String encrypt(String plaintext) {              │
+│          byte[] iv = new byte[12];                          │
+│          new SecureRandom().nextBytes(iv);                  │
+│          Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");│
+│          cipher.init(Cipher.ENCRYPT_MODE, secretKey, new GCMParameterSpec(128, iv));│
+│          byte[] ciphertext = cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));│
+│          return Base64.getEncoder().encodeToString(concat(iv, ciphertext));│
+│      }                                                      │
+│                                                             │
+│      public String decrypt(String encrypted) {              │
+│          byte[] decoded = Base64.getDecoder().decode(encrypted);│
+│          byte[] iv = Arrays.copyOfRange(decoded, 0, 12);    │
+│          byte[] ciphertext = Arrays.copyOfRange(decoded, 12, decoded.length);│
+│          Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");│
+│          cipher.init(Cipher.DECRYPT_MODE, secretKey, new GCMParameterSpec(128, iv));│
+│          return new String(cipher.doFinal(ciphertext), StandardCharsets.UTF_8);│
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+│  密钥管理:                                                   │
+│  ─────────────────────────────────────────────────────────  │
+│  方案 A (推荐): 环境变量                                     │
+│  • 配置: ENCRYPTION_KEY=${VAULT_KEY} 或直接配置             │
+│  • 部署时注入: Docker secrets / K8s secrets                 │
+│                                                             │
+│  方案 B (企业级): HashiCorp Vault                            │
+│  • 集成 Spring Vault                                        │
+│  • 动态获取密钥                                              │
+│  • 密钥轮换支持                                              │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 20.2 文件路径访问安全校验
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   文件路径安全校验                            │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  风险: 路径遍历攻击 (Path Traversal)                         │
+│  ─────────────────────────────────────────────────────────  │
+│  攻击示例:                                                   │
+│  • GET /api/files/../../../etc/passwd                       │
+│  • GET /api/files/..%2F..%2F..%2Fsecret                     │
+│                                                             │
+│  防护措施:                                                   │
+│  ─────────────────────────────────────────────────────────  │
+│  1. 路径规范化                                               │
+│     • 使用 Path.normalize() 去除冗余                       │
+│     • 解码 URL 编码后再校验                                 │
+│                                                             │
+│  2. 路径边界校验                                             │
+│     • 确保解析后的路径在项目根目录内                         │
+│     • 不允许访问项目外的文件                                 │
+│                                                             │
+│  3. 禁止字符过滤                                             │
+│     • 禁止 ".." (路径遍历)                                  │
+│     • 禁止 "~" (用户目录)                                   │
+│     • 禁止绝对路径开头 "/" 或 "C:\"                        │
+│                                                             │
+│  实现示例:                                                   │
+│  @Service                                                    │
+│  public class FileSecurityService {                         │
+│                                                             │
+│      public Path validatePath(Long projectId, String filePath) {│
+│          // 1. 获取项目根目录                               │
+│          Path projectRoot = getProjectRoot(projectId);      │
+│                                                             │
+│          // 2. URL 解码                                     │
+│          String decodedPath = URLDecoder.decode(filePath, StandardCharsets.UTF_8);│
+│                                                             │
+│          // 3. 禁止字符检查                                 │
+│          if (decodedPath.contains("..") || decodedPath.contains("~")) {│
+│              throw new SecurityException("非法路径: 包含禁止字符");│
+│          }                                                  │
+│                                                             │
+│          // 4. 绝对路径检查                                 │
+│          if (decodedPath.startsWith("/") || decodedPath.matches("[A-Za-z]:.*")) {│
+│              throw new SecurityException("非法路径: 不允许绝对路径");│
+│          }                                                  │
+│                                                             │
+│          // 5. 路径规范化                                   │
+│          Path resolvedPath = projectRoot.resolve(decodedPath).normalize();│
+│                                                             │
+│          // 6. 边界校验                                     │
+│          if (!resolvedPath.startsWith(projectRoot)) {       │
+│              throw new SecurityException("非法路径: 超出项目范围");│
+│          }                                                  │
+│                                                             │
+│          // 7. 文件存在检查                                 │
+│          if (!Files.exists(resolvedPath)) {                 │
+│              throw new FileNotFoundException("文件不存在");  │
+│          }                                                  │
+│                                                             │
+│          return resolvedPath;                               │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 20.3 Webhook 签名验证
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   Webhook 签名验证方案                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  GitLab Webhook 验证                                        │
+│  ─────────────────────────────────────────────────────────  │
+│  • Header: X-Gitlab-Token                                   │
+│  • 方式: 直接比对 Secret Token                              │
+│  • 配置: 项目设置中配置 webhook secret                      │
+│                                                             │
+│  实现:                                                       │
+│  @Component                                                  │
+│  public class GitLabWebhookValidator implements WebhookValidator {│
+│                                                             │
+│      @Override                                              │
+│      public boolean validate(HttpServletRequest request, Project project) {│
+│          String token = request.getHeader("X-Gitlab-Token");│
+│          String expectedToken = project.getWebhookSecret(); │
+│          return Objects.equals(token, expectedToken);       │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+│  GitHub Webhook 验证                                        │
+│  ─────────────────────────────────────────────────────────  │
+│  • Header: X-Hub-Signature-256                              │
+│  • 方式: HMAC-SHA256 签名验证                               │
+│  • 格式: sha256=<hex_digest>                                │
+│                                                             │
+│  实现:                                                       │
+│  @Component                                                  │
+│  public class GitHubWebhookValidator implements WebhookValidator {│
+│                                                             │
+│      @Override                                              │
+│      public boolean validate(HttpServletRequest request, Project project) throws IOException {│
+│          String signature = request.getHeader("X-Hub-Signature-256");│
+│          if (signature == null || !signature.startsWith("sha256=")) {│
+│              return false;                                  │
+│          }                                                  │
+│                                                             │
+│          String expectedSignature = signature.substring(7); │
+│          String payload = readRequestBody(request);         │
+│          String actualSignature = hmacSha256(project.getWebhookSecret(), payload);│
+│                                                             │
+│          return MessageDigest.isEqual(                      │
+│              Hex.decodeHex(expectedSignature),              │
+│              Hex.decodeHex(actualSignature)                 │
+│          );                                                 │
+│      }                                                      │
+│                                                             │
+│      private String hmacSha256(String secret, String payload) {│
+│          Mac mac = Mac.getInstance("HmacSHA256");           │
+│          mac.init(new SecretKeySpec(secret.getBytes(), "HmacSHA256"));│
+│          return Hex.encodeHexString(mac.doFinal(payload.getBytes()));│
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+│  Gitee Webhook 验证                                         │
+│  ─────────────────────────────────────────────────────────  │
+│  • Header: X-Gitee-Token                                    │
+│  • 方式: 与 GitLab 类似，直接比对                           │
+│                                                             │
+│  时间戳防重放攻击                                            │
+│  ─────────────────────────────────────────────────────────  │
+│  • Header: X-Gitlab-Event-UUID 或自定义 timestamp           │
+│  • 验证: 请求时间戳在 5 分钟内有效                           │
+│  • 缓存: Redis 记录已处理的 webhook UUID，防止重复处理       │
+│                                                             │
+│  @Component                                                  │
+│  public class WebhookReplayProtection {                     │
+│      private final RedisTemplate<String, String> redis;     │
+│      private static final long EXPIRE_SECONDS = 300;        │
+│                                                             │
+│      public boolean isReplayAttack(String uuid) {           │
+│          String key = "webhook:" + uuid;                    │
+│          Boolean existed = redis.hasKey(key);               │
+│          if (existed) {                                     │
+│              return true;  // 重放攻击                       │
+│          }                                                  │
+│          redis.opsForValue().set(key, "processed", EXPIRE_SECONDS, TimeUnit.SECONDS);│
+│          return false;                                      │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 20.4 Cypher 查询安全验证
+
+已在第七章 7.3 定义，补充完整实现：
+
+```java
+@Component
+public class CypherSecurityValidator {
+
+    // 禁止的操作关键字
+    private static final Set<String> FORBIDDEN_OPERATIONS = Set.of(
+        "CREATE", "DELETE", "SET", "MERGE", "REMOVE", "DROP", "CALL",
+        "LOAD", "SAVE", "GRANT", "REVOKE", "DENY"
+    );
+
+    // 禁止的函数
+    private static final Set<String> FORBIDDEN_FUNCTIONS = Set.of(
+        "apoc.", "db.", "sys.", "tx."
+    );
+
+    // 最大查询深度
+    private static final int MAX_PATH_DEPTH = 10;
+
+    // 最大返回数量
+    private static final int MAX_LIMIT = 1000;
+
+    public ValidationResult validate(String cypher) {
+        String upperCypher = cypher.toUpperCase().trim();
+
+        // 1. 禁止操作检查
+        for (String forbidden : FORBIDDEN_OPERATIONS) {
+            if (upperCypher.contains(forbidden)) {
+                return ValidationResult.fail("包含禁止的操作: " + forbidden);
+            }
+        }
+
+        // 2. 禁止函数检查
+        for (String forbiddenFunc : FORBIDDEN_FUNCTIONS) {
+            if (upperCypher.toUpperCase().contains(forbiddenFunc.toUpperCase())) {
+                return ValidationResult.fail("包含禁止的函数: " + forbiddenFunc);
+            }
+        }
+
+        // 3. 路径深度检查
+        Pattern depthPattern = Pattern.compile("\\*\\d+\\.\\.\\d+");
+        Matcher matcher = depthPattern.matcher(cypher);
+        while (matcher.find()) {
+            String depthStr = matcher.group();
+            // 解析深度，确保不超过最大值
+            if (parseDepth(depthStr) > MAX_PATH_DEPTH) {
+                return ValidationResult.fail("路径深度超过限制: " + MAX_PATH_DEPTH);
+            }
+        }
+
+        // 4. 必须有 LIMIT (建议)
+        if (!upperCypher.contains("LIMIT") && !upperCypher.contains("COUNT")) {
+            // 添加警告，但不阻止
+            // log.warn("Cypher 查询缺少 LIMIT，可能导致大量数据返回");
+        }
+
+        return ValidationResult.success();
+    }
+
+    @Data
+    public static class ValidationResult {
+        private boolean valid;
+        private String errorMessage;
+    }
+}
+```
+
+---
+
+## 二十一、可维护性设计（新增）
+
+### 21.1 日志规范
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   日志规范设计                                │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  技术栈: SLF4J + Logback + Logstash Logback Encoder         │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  日志格式: JSON 结构化日志                                    │
+│  {                                                          │
+│    "timestamp": "2024-01-15T10:30:00.123Z",                 │
+│    "level": "INFO",                                         │
+│    "logger": "com.example.qa.QAService",                    │
+│    "message": "问题处理完成",                                │
+│    "traceId": "abc123",                                     │
+│    "spanId": "def456",                                      │
+│    "projectId": 1,                                          │
+│    "userId": 100,                                           │
+│    "durationMs": 1500,                                      │
+│    "cypher": "MATCH (m:Method)...",                         │
+│    "resultCount": 10                                        │
+│  }                                                          │
+│                                                             │
+│  Logback 配置:                                               │
+│  <configuration>                                            │
+│    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">│
+│      <encoder class="net.logstash.logback.encoder.LogstashEncoder">│
+│        <includeMdcKeyName>traceId</includeMdcKeyName>       │
+│        <includeMdcKeyName>spanId</includeMdcKeyName>        │
+│        <includeMdcKeyName>projectId</includeMdcKeyName>     │
+│        <includeMdcKeyName>userId</includeMdcKeyName>        │
+│      </encoder>                                             │
+│    </appender>                                              │
+│    <root level="INFO">                                      │
+│      <appender-ref ref="JSON"/>                             │
+│    </root>                                                  │
+│  </configuration>                                           │
+│                                                             │
+│  关键操作日志级别:                                            │
+│  ─────────────────────────────────────────────────────────  │
+│  • 项目导入/解析: INFO (开始、完成、失败)                     │
+│  • 图谱查询: DEBUG (Cypher、耗时、结果数)                     │
+│  • LLM 调用: INFO (prompt长度、响应时间、token数)            │
+│  • Webhook: INFO (接收、验证结果、处理结果)                   │
+│  • 安全事件: WARN (验证失败、非法访问)                        │
+│  • 错误: ERROR (异常堆栈、上下文信息)                         │
+│                                                             │
+│  MDC 上下文注入:                                             │
+│  @Component                                                  │
+│  public class LoggingContextFilter implements Filter {      │
+│      @Override                                              │
+│      public void doFilter(ServletRequest request, ...) {    │
+│          String traceId = UUID.randomUUID().toString().substring(0, 8);│
+│          MDC.put("traceId", traceId);                       │
+│          // 从 JWT 获取 userId                              │
+│          MDC.put("userId", getCurrentUserId());             │
+│          try {                                              │
+│              chain.doFilter(request, response);             │
+│          } finally {                                        │
+│              MDC.clear();                                   │
+│          }                                                  │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 21.2 链路追踪
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   链路追踪设计                                │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  方案 A (轻量): MDC + traceId 透传                           │
+│  ─────────────────────────────────────────────────────────  │
+│  • 适用: 单体应用、中小规模                                  │
+│  • 实现: Filter 生成 traceId，贯穿整个请求链                 │
+│  • 日志关联: 通过 traceId 查询完整请求链日志                 │
+│                                                             │
+│  方案 B (标准): Spring Cloud Sleuth + Zipkin/Jaeger         │
+│  ─────────────────────────────────────────────────────────  │
+│  • 适用: 微服务架构、大规模                                  │
+│  • 依赖: spring-cloud-starter-sleuth                       │
+│  • 集成: Zipkin/Jaeger 收集和可视化                         │
+│                                                             │
+│  关键链路追踪点:                                              │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  问答请求链路:                                               │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ 1. 请求接收 [userId, projectId, question]           │   │
+│  │    │                                                │   │
+│  │ 2. 问题理解 [intentType, entities, durationMs]      │   │
+│  │    │                                                │   │
+│  │ 3. 模板匹配/Cypher生成 [matchedTemplate, cypher]    │   │
+│  │    │                                                │   │
+│  │ 4. Neo4j 执行 [cypher, durationMs, resultCount]     │   │
+│  │    │                                                │   │
+│  │ 5. 上下文构建 [contextSize, filesLoaded]            │   │
+│  │    │                                                │   │
+│  │ 6. 答案生成 [promptTokens, responseTokens, durationMs]│   │
+│  │    │                                                │   │
+│  │ 7. 响应返回 [totalDurationMs]                        │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│  解析任务链路:                                               │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ 1. 任务开始 [projectId, parseType]                   │   │
+│  │    │                                                │   │
+│  │ 2. Git Clone [repoUrl, durationMs, fileSize]        │   │
+│  │    │                                                │   │
+│  │ 3. MCP 解析 [symbolCount, edgeCount, durationMs]    │   │
+│  │    │                                                │   │
+│  │ 4. Git Log 解析 [commitCount, authorCount]          │   │
+│  │    │                                                │   │
+│  │ 5. Neo4j 写入 [nodeCount, edgeCount, durationMs]    │   │
+│  │    │                                                │   │
+│  │ 6. 任务完成 [totalDurationMs, status]                │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 21.3 统一异常处理
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   统一异常处理设计                            │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  错误码定义:                                                  │
+│  ─────────────────────────────────────────────────────────  │
+│  范围       │ 类别           │ 示例                         │
+│  ─────────────────────────────────────────────────────────  │
+│  1000-1999 │ 用户相关       │ 1001: 用户不存在             │
+│            │                │ 1002: 密码错误               │
+│            │                │ 1003: Token 无效             │
+│  2000-2999 │ 项目相关       │ 2001: 项目不存在             │
+│            │                │ 2002: 项目正在解析           │
+│            │                │ 2003: Git 仓库访问失败       │
+│  3000-3999 │ 解析相关       │ 3001: MCP 调用失败           │
+│            │                │ 3002: 解析超时               │
+│            │                │ 3003: 代码格式不支持         │
+│  4000-4999 │ LLM 相关       │ 4001: LLM 调用失败           │
+│            │                │ 4002: Token 超限             │
+│            │                │ 4003: 响应超时               │
+│  5000-5999 │ 图谱相关       │ 5001: Neo4j 连接失败         │
+│            │                │ 5002: Cypher 语法错误        │
+│            │                │ 5003: 查询超时               │
+│  6000-6999 │ 安全相关       │ 6001: 路径遍历攻击           │
+│            │                │ 6002: Webhook 验证失败       │
+│            │                │ 6003: Cypher 注入风险        │
+│                                                             │
+│  异常类定义:                                                  │
+│  public class BusinessException extends RuntimeException {  │
+│      private final int errorCode;                           │
+│      private final String errorMessage;                     │
+│      private final String traceId;                          │
+│      private final Map<String, Object> context;             │
+│                                                             │
+│      public BusinessException(ErrorCode code) {             │
+│          super(code.getMessage());                          │
+│          this.errorCode = code.getCode();                   │
+│          this.errorMessage = code.getMessage();             │
+│          this.traceId = MDC.get("traceId");                 │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+│  全局异常处理器:                                              │
+│  @ControllerAdvice                                           │
+│  public class GlobalExceptionHandler {                      │
+│                                                             │
+│      @ExceptionHandler(BusinessException.class)             │
+│      public ResponseEntity<ErrorResponse> handleBusiness(BusinessException e) {│
+│          log.warn("业务异常: code={}, message={}", e.getErrorCode(), e.getMessage());│
+│          return ResponseEntity.status(getHttpStatus(e.getErrorCode()))│
+│              .body(ErrorResponse.builder()                   │
+│                  .errorCode(e.getErrorCode())                │
+│                  .errorMessage(e.getErrorMessage())          │
+│                  .traceId(e.getTraceId())                    │
+│                  .timestamp(LocalDateTime.now())             │
+│                  .build());                                  │
+│      }                                                      │
+│                                                             │
+│      @ExceptionHandler(Exception.class)                     │
+│      public ResponseEntity<ErrorResponse> handleUnknown(Exception e) {│
+│          log.error("未知异常: ", e);                         │
+│          return ResponseEntity.status(500)                  │
+│              .body(ErrorResponse.builder()                   │
+│                  .errorCode(9999)                            │
+│                  .errorMessage("系统内部错误")                │
+│                  .traceId(MDC.get("traceId"))                │
+│                  .build());                                  │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+│  响应格式:                                                   │
+│  {                                                          │
+│    "errorCode": 2001,                                       │
+│    "errorMessage": "项目不存在",                             │
+│    "traceId": "abc123",                                     │
+│    "timestamp": "2024-01-15T10:30:00",                      │
+│    "context": { "projectId": 999 }                          │
+│  }                                                          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 21.4 API 接口列表
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   API 接口设计                                │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  用户模块 /api/users                                         │
+│  ─────────────────────────────────────────────────────────  │
+│  POST   /api/users/register      注册用户                   │
+│  POST   /api/users/login         用户登录                   │
+│  POST   /api/users/logout        用户登出                   │
+│  GET    /api/users/me            获取当前用户信息            │
+│  PUT    /api/users/me            更新当前用户信息            │
+│                                                             │
+│  项目模块 /api/projects                                       │
+│  ─────────────────────────────────────────────────────────  │
+│  GET    /api/projects            获取项目列表                │
+│  POST   /api/projects            创建项目（导入）            │
+│  GET    /api/projects/{id}       获取项目详情                │
+│  PUT    /api/projects/{id}       更新项目配置                │
+│  DELETE /api/projects/{id}       删除项目                    │
+│  POST   /api/projects/{id}/parse 触发解析                    │
+│  GET    /api/projects/{id}/status 获取解析状态               │
+│  GET    /api/projects/{id}/tasks  获取解析任务列表           │
+│  POST   /api/projects/{id}/webhook 配置 Webhook             │
+│                                                             │
+│  文件模块 /api/projects/{id}/files                           │
+│  ─────────────────────────────────────────────────────────  │
+│  GET    /api/projects/{id}/files/tree   获取文件树           │
+│  GET    /api/projects/{id}/files/{path} 获取文件内容         │
+│  参数: startLine, endLine, ref                              │
+│                                                             │
+│  问答模块 /api/qa                                             │
+│  ─────────────────────────────────────────────────────────  │
+│  POST   /api/qa/sessions         创建对话会话                │
+│  GET    /api/qa/sessions         获取会话列表                │
+│  DELETE /api/qa/sessions/{id}    删除会话                    │
+│  POST   /api/qa/sessions/{id}/ask 提问                       │
+│  GET    /api/qa/sessions/{id}/messages 获取消息列表          │
+│  GET    /api/qa/stream           流式问答 (WebSocket/SSE)    │
+│                                                             │
+│  图谱模块 /api/graph                                          │
+│  ─────────────────────────────────────────────────────────  │
+│  GET    /api/graph/{projectId}/nodes   获取节点列表          │
+│  GET    /api/graph/{projectId}/node/{id} 获取节点详情        │
+│  GET    /api/graph/{projectId}/search   搜索节点             │
+│  GET    /api/graph/{projectId}/path     获取调用链路径       │
+│  参数: fromNode, toNode, maxDepth                           │
+│                                                             │
+│  凭证模块 /api/credentials                                    │
+│  ─────────────────────────────────────────────────────────  │
+│  GET    /api/credentials         获取凭证列表                │
+│  POST   /api/credentials         创建凭证                    │
+│  PUT    /api/credentials/{id}    更新凭证                    │
+│  DELETE /api/credentials/{id}    删除凭证                    │
+│                                                             │
+│  Webhook 接收                                                 │
+│  ─────────────────────────────────────────────────────────  │
+│  POST   /api/webhook/gitlab     GitLab Webhook              │
+│  POST   /api/webhook/github     GitHub Webhook              │
+│  POST   /api/webhook/gitee      Gitee Webhook               │
+│                                                             │
+│  配置模块 /api/config                                         │
+│  ─────────────────────────────────────────────────────────  │
+│  GET    /api/config/llm          获取 LLM 配置               │
+│  PUT    /api/config/llm          更新 LLM 配置               │
+│  GET    /api/config/llm/providers 获取可用 LLM 提供商        │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+
+### 21.5 API 请求/响应示例
+
+用户登录:
+```json
+// POST /api/users/login
+// Request
+{
+  "username": "admin",
+  "password": "password123"
+}
+
+// Response 200
+{
+  "success": true,
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIs...",
+    "user": {
+      "id": 1,
+      "username": "admin",
+      "email": "admin@example.com"
+    }
+  }
+}
+
+// Response 401
+{
+  "errorCode": 1002,
+  "errorMessage": "用户名或密码错误",
+  "traceId": "abc123"
+}
+```
+
+项目导入:
+```json
+// POST /api/projects
+// Request
+{
+  "name": "订单系统",
+  "gitUrl": "https://gitlab.example.com/order-service.git",
+  "branch": "main",
+  "credentialId": 1,
+  "parseScope": "src/main/java"
+}
+
+// Response 201
+{
+  "success": true,
+  "data": {
+    "id": 1,
+    "name": "订单系统",
+    "status": "PENDING",
+    "createdAt": "2024-01-15T10:30:00"
+  }
+}
+```
+
+问答请求:
+```json
+// POST /api/qa/sessions/1/ask
+// Request
+{
+  "question": "createOrder 方法最后是谁修改的？"
+}
+
+// Response 200
+{
+  "success": true,
+  "data": {
+    "answer": "createOrder 方法最后由张三修改，提交信息为 'fix: 修复订单金额计算错误'，修改时间为 2024-01-10 14:30:00。",
+    "citations": [
+      {
+        "file": "src/main/java/OrderService.java",
+        "line": 25,
+        "snippet": "public Order createOrder(OrderRequest req) {"
+      }
+    ],
+    "graphResult": {
+      "nodes": [
+        {"type": "Method", "name": "createOrder"},
+        {"type": "Commit", "hash": "abc123", "message": "fix: 修复订单金额计算错误"},
+        {"type": "Author", "name": "张三", "email": "zhangsan@example.com"}
+      ]
+    }
+  }
+}
+```
+```
+
+---
+
+## 二十二、深入技术细节（新增）
+
+### 22.1 MCP 进程管理与并发控制
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   MCP 进程池管理                              │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  设计目标:                                                    │
+│  • 支持多项目并发解析                                         │
+│  • 控制资源消耗（进程数、内存）                                │
+│  • 处理进程异常和超时                                         │
+│                                                             │
+│  进程池架构:                                                  │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │                McpProcessPool                        │   │
+│  │                                                      │   │
+│  │  配置:                                               │   │
+│  │  • maxPoolSize: 4 (最大并行进程数)                   │   │
+│  │  • processTimeout: 30min (单次解析超时)              │   │
+│  │  • idleTimeout: 5min (空闲进程回收)                  │   │
+│  │  • retryCount: 3 (异常重试次数)                      │   │
+│  │                                                      │   │
+│  │  ┌───────────────────────────────────────────────┐ │   │
+│  │  │ 进程队列                                       │ │   │
+│  │  │ [P1: 项目A解析中] [P2: 项目B解析中]            │ │   │
+│  │  │ [P3: 空闲] [P4: 空闲]                          │ │   │
+│  │  │ [等待队列: 项目C, 项目D, 项目E...]             │ │   │
+│  │  └───────────────────────────────────────────────┘ │   │
+│  │                                                      │   │
+│  │  状态监控:                                           │   │
+│  │  • 活跃进程数                                        │   │
+│  │  • 等待任务数                                        │   │
+│  │  • 各进程运行时长                                    │   │
+│  │  • 进程健康状态                                      │   │
+│  │                                                      │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│  实现设计:                                                    │
+│  @Service                                                    │
+│  public class McpProcessPool {                              │
+│                                                             │
+│      private final BlockingQueue<McpProcess> idleProcesses; │
+│      private final Map<Long, McpProcess> activeProcesses;   │
+│      private final Semaphore processSemaphore;              │
+│      private final int maxPoolSize = 4;                     │
+│      private final Duration processTimeout = Duration.ofMinutes(30);│
+│                                                             │
+│      public McpProcess acquire(Long projectId) {            │
+│          // 1. 尝试获取空闲进程                              │
+│          McpProcess process = idleProcesses.poll();         │
+│          if (process != null && process.isHealthy()) {      │
+│              activeProcesses.put(projectId, process);       │
+│              return process;                                │
+│          }                                                  │
+│                                                             │
+│          // 2. 等待进程可用                                  │
+│          processSemaphore.acquire();                        │
+│          process = createNewProcess(projectId);             │
+│          activeProcesses.put(projectId, process);           │
+│          return process;                                    │
+│      }                                                      │
+│                                                             │
+│      public void release(Long projectId) {                  │
+│          McpProcess process = activeProcesses.remove(projectId);│
+│          if (process != null) {                             │
+│              if (process.isHealthy()) {                     │
+│                  idleProcesses.offer(process);              │
+│              } else {                                       │
+│                  process.destroy();                         │
+│              }                                              │
+│              processSemaphore.release();                    │
+│          }                                                  │
+│      }                                                      │
+│                                                             │
+│      // 超时监控                                             │
+│      @Scheduled(fixedRate = 60000)                          │
+│      public void monitorTimeouts() {                        │
+│          activeProcesses.forEach((projectId, process) -> {  │
+│              if (process.getRunningTime().compareTo(processTimeout) > 0) {│
+│                  log.warn("进程超时，强制终止: projectId={}", projectId);│
+│                  process.destroy();                         │
+│                  release(projectId);                        │
+│                  // 触发解析失败事件                         │
+│                  eventPublisher.publishEvent(new ParseTimeoutEvent(projectId));│
+│              }                                              │
+│          });                                                │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+│  McpProcess 包装类:                                          │
+│  @Data                                                       │
+│  public class McpProcess {                                  │
+│      private Process process;                               │
+│      private McpClient client;                              │
+│      private Long projectId;                                │
+│      private Instant startTime;                             │
+│      private boolean healthy;                               │
+│                                                             │
+│      public McpResponse callTool(String tool, Map<String, Object> args) {│
+│          try {                                              │
+│              return client.callTool(tool, args);            │
+│          } catch (Exception e) {                            │
+│              this.healthy = false;                          │
+│              throw new McpCallException("MCP调用失败", e);  │
+│          }                                                  │
+│      }                                                      │
+│                                                             │
+│      public void destroy() {                                │
+│          if (process != null && process.isAlive()) {        │
+│              process.destroyForcibly();                     │
+│          }                                                  │
+│          this.healthy = false;                              │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 22.2 Neo4j 事务与数据一致性
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   Neo4j 数据一致性设计                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  事务管理策略:                                                │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  1. 批量写入事务                                              │
+│  • 单次事务最多写入 1000 个节点                              │
+│  • 超过则分批提交，每批独立事务                               │
+│  • 单批失败不影响其他批次                                    │
+│                                                             │
+│  @Service                                                    │
+│  public class Neo4jBatchWriter {                            │
+│                                                             │
+│      private static final int BATCH_SIZE = 1000;            │
+│                                                             │
+│      public BatchResult writeNodes(List<NodeData> nodes) {  │
+│          List<List<NodeData>> batches = partition(nodes, BATCH_SIZE);│
+│          BatchResult result = new BatchResult();            │
+│                                                             │
+│          for (List<NodeData> batch : batches) {             │
+│              try {                                          │
+│                  transactionTemplate.execute(status -> {    │
+│                      writeBatch(batch);                     │
+│                      return null;                           │
+│                  });                                        │
+│                  result.addSuccess(batch.size());           │
+│              } catch (Exception e) {                        │
+│                  log.error("批次写入失败: {}", e.getMessage());│
+│                  result.addFailure(batch.size(), e);        │
+│                  // 记录失败节点，后续可重试                 │
+│                  saveFailedBatch(batch);                    │
+│              }                                              │
+│          }                                                  │
+│          return result;                                     │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+│  2. 幂等性设计                                                │
+│  ─────────────────────────────────────────────────────────  │
+│  • 使用 MERGE 替代 CREATE                                   │
+│  • 基于唯一标识（file + name + line）判断节点是否存在        │
+│                                                             │
+│  // 幂等写入 Cypher                                          │
+│  MERGE (m:Method {                                          │
+│      projectId: $projectId,                                 │
+│      filePath: $filePath,                                   │
+│      name: $name,                                           │
+│      startLine: $startLine                                  │
+│  })                                                         │
+│  ON CREATE SET                                              │
+│      m.signature = $signature,                              │
+│      m.returnType = $returnType,                            │
+│      m.createdAt = datetime()                               │
+│  ON MATCH SET                                               │
+│      m.signature = $signature,                              │
+│      m.returnType = $returnType,                            │
+│      m.updatedAt = datetime()                               │
+│                                                             │
+│  3. 项目重新导入策略                                          │
+│  ─────────────────────────────────────────────────────────  │
+│  • 全量重新导入: 删除该项目所有节点后重新导入                 │
+│  • 增量导入: 只处理变更文件                                  │
+│                                                             │
+│  // 全量重新导入前的清理                                     │
+│  MATCH (n) WHERE n.projectId = $projectId                  │
+│  DETACH DELETE n                                            │
+│                                                             │
+│  // 增量导入: 删除变更文件相关节点                            │
+│  MATCH (n)                                                  │
+│  WHERE n.projectId = $projectId                             │
+│    AND n.filePath IN $changedFiles                          │
+│  DETACH DELETE n                                            │
+│  // 然后重新导入这些文件的节点                               │
+│                                                             │
+│  4. 节点唯一性约束                                            │
+│  ─────────────────────────────────────────────────────────  │
+│  // 创建唯一性约束                                           │
+│  CREATE CONSTRAINT method_unique IF NOT EXISTS             │
+│  FOR (m:Method)                                             │
+│  REQUIRE (m.projectId, m.filePath, m.name, m.startLine) IS UNIQUE│
+│                                                             │
+│  CREATE CONSTRAINT class_unique IF NOT EXISTS              │
+│  FOR (c:Class)                                              │
+│  REQUIRE (c.projectId, c.fullName) IS UNIQUE               │
+│                                                             │
+│  CREATE CONSTRAINT commit_unique IF NOT EXISTS             │
+│  FOR (c:Commit)                                             │
+│  REQUIRE (c.projectId, c.hash) IS UNIQUE                   │
+│                                                             │
+│  5. 并发更新处理                                              │
+│  ─────────────────────────────────────────────────────────  │
+│  • 使用乐观锁: 节点带 version 属性                           │
+│  • 更新时检查版本                                            │
+│                                                             │
+│  MATCH (m:Method {projectId: $projectId, ...})             │
+│  WHERE m.version = $expectedVersion                        │
+│  SET m.signature = $newSignature,                           │
+│      m.version = m.version + 1                              │
+│  RETURN m                                                   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 22.3 LLM Token 限制与流式输出
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   LLM Token 限制处理                          │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  问题: 图谱查询结果可能包含大量代码片段，超过 LLM Token 限制  │
+│                                                             │
+│  Token 限制参考:                                              │
+│  ─────────────────────────────────────────────────────────  │
+│  • GPT-4: 8K / 32K / 128K                                  │
+│  • GPT-4o: 128K                                             │
+│  • 通义千问: 32K                                             │
+│  • DeepSeek: 64K                                            │
+│                                                             │
+│  解决方案: 分层截断策略                                       │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  1. 查询结果限制                                              │
+│  • Cypher 查询强制添加 LIMIT                                 │
+│  • 默认最多返回 20 个节点                                    │
+│                                                             │
+│  2. 代码片段截断                                              │
+│  • 每个代码片段最多 50 行                                    │
+│  • 超出部分用 "...N lines omitted..." 标记                   │
+│                                                             │
+│  3. 上下文优先级排序                                          │
+│  ─────────────────────────────────────────────────────────  │
+│  优先级 1: 用户问题 + 系统提示词                             │
+│  优先级 2: 匹配的图谱节点摘要 (名称、类型、位置)              │
+│  优先级 3: 最相关节点的代码片段                              │
+│  优先级 4: 其他节点的代码片段                                │
+│                                                             │
+│  4. Token 计数与动态截断                                      │
+│  @Service                                                    │
+│  public class ContextOptimizer {                            │
+│                                                             │
+│      private final TokenCounter tokenCounter;               │
+│      private final int maxTokens = 32000;  // 留 4K 给输出  │
+│                                                             │
+│      public String buildOptimizedContext(GraphResult result, String question) {│
+│          StringBuilder context = new StringBuilder();       │
+│          int currentTokens = countBaseTokens(question);     │
+│                                                             │
+│          // 1. 添加节点摘要（高优先级）                       │
+│          String summary = buildNodeSummary(result.getNodes());│
+│          currentTokens += tokenCounter.count(summary);      │
+│          context.append(summary);                           │
+│                                                             │
+│          // 2. 按相关性排序节点                              │
+│          List<NodeData> sortedNodes = sortByRelevance(result.getNodes());│
+│                                                             │
+│          // 3. 动态添加代码片段                               │
+│          for (NodeData node : sortedNodes) {                │
+│              String snippet = loadCodeSnippet(node, 50);    │
+│              int snippetTokens = tokenCounter.count(snippet);│
+│                                                             │
+│              if (currentTokens + snippetTokens < maxTokens) {│
+│                  context.append("\n--- ").append(node.getName()).append(" ---\n");│
+│                  context.append(snippet);                   │
+│                  currentTokens += snippetTokens;            │
+│              } else {                                       │
+│                  // Token 不足，只添加位置信息               │
+│                  context.append("\n").append(node.getName())│
+│                      .append(" (见: ").append(node.getFilePath())│
+│                      .append(":").append(node.getStartLine()).append(")");│
+│              }                                              │
+│          }                                                  │
+│                                                             │
+│          return context.toString();                         │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+│  Token 计数实现 (估算):                                       │
+│  @Component                                                  │
+│  public class TokenCounter {                                │
+│      // 简化估算: 中文约 0.5 token/字, 英文约 0.25 token/字 │
+│      public int count(String text) {                        │
+│          int chineseChars = text.replaceAll("[^\\u4e00-\\u9fa5]", "").length();│
+│          int otherChars = text.length() - chineseChars;     │
+│          return (int) (chineseChars * 0.5 + otherChars * 0.25);│
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│                   流式输出实现                                │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  技术方案: SSE (Server-Sent Events)                          │
+│  ─────────────────────────────────────────────────────────  │
+│  • 优点: 单向推送，实现简单，兼容性好                         │
+│  • 缺点: 不支持双向通信                                      │
+│                                                             │
+│  SSE 控制器实现:                                              │
+│  @RestController                                             │
+│  @RequestMapping("/api/qa")                                  │
+│  public class StreamingQAController {                       │
+│                                                             │
+│      @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)│
+│      public Flux<String> streamAnswer(                       │
+│          @RequestParam Long projectId,                      │
+│          @RequestParam String question,                     │
+│          @RequestParam Long sessionId                       │
+│      ) {                                                    │
+│          return Flux.create(emitter -> {                    │
+│              try {                                          │
+│                  // Step 1: 问题理解                         │
+│                  emitter.next(formatEvent("status", "正在分析问题..."));│
+│                  IntentResult intent = intentClassifier.classify(question);│
+│                                                             │
+│                  // Step 2: 图谱查询                         │
+│                  emitter.next(formatEvent("status", "正在查询知识图谱..."));│
+│                  GraphResult result = executeQuery(intent, projectId);│
+│                                                             │
+│                  // Step 3: 流式生成答案                     │
+│                  emitter.next(formatEvent("status", "正在生成回答..."));│
+│                  emitter.next(formatEvent("context", toJson(result.getCitations())));│
+│                                                             │
+│                  // LLM 流式调用                             │
+│                  llmService.stream(prompt, new StreamHandler() {│
+│                      @Override                              │
+│                      public void onToken(String token) {    │
+│                          emitter.next(formatEvent("content", token));│
+│                      }                                      │
+│                      @Override                              │
+│                      public void onComplete() {             │
+│                          emitter.next(formatEvent("done", "完成"));│
+│                          emitter.complete();                │
+│                      }                                      │
+│                      @Override                              │
+│                      public void onError(Exception e) {     │
+│                          emitter.next(formatEvent("error", e.getMessage()));│
+│                          emitter.complete();                │
+│                      }                                      │
+│                  });                                        │
+│                                                             │
+│              } catch (Exception e) {                        │
+│                  emitter.next(formatEvent("error", e.getMessage()));│
+│                  emitter.complete();                        │
+│              }                                              │
+│          });                                                │
+│      }                                                      │
+│                                                             │
+│      private String formatEvent(String type, String data) { │
+│          return ServerSentEvent.builder()                   │
+│              .event(type)                                   │
+│              .data(data)                                    │
+│              .build()                                       │
+│              .toString();                                   │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+│  前端 SSE 接收:                                               │
+│  const eventSource = new EventSource(`/api/qa/stream?projectId=${projectId}&question=${question}`);│
+│                                                             │
+│  eventSource.addEventListener('status', (e) => {            │
+│      setStatusMessage(e.data);                              │
+│  });                                                        │
+│                                                             │
+│  eventSource.addEventListener('content', (e) => {           │
+│      appendToAnswer(e.data);                                │
+│  });                                                        │
+│                                                             │
+│  eventSource.addEventListener('context', (e) => {           │
+│      setCitations(JSON.parse(e.data));                      │
+│  });                                                        │
+│                                                             │
+│  eventSource.addEventListener('done', (e) => {              │
+│      eventSource.close();                                   │
+│      markAnswerComplete();                                  │
+│  });                                                        │
+│                                                             │
+│  eventSource.addEventListener('error', (e) => {             │
+│      eventSource.close();                                   │
+│      showError(e.data);                                     │
+│  });                                                        │
+│                                                             │
+│  LangChain4j 流式调用:                                       │
+│  StreamingChatLanguageModel model = OpenAiStreamingChatModel.builder()│
+│      .apiKey(apiKey)                                        │
+│      .modelName("gpt-4")                                    │
+│      .build();                                              │
+│                                                             │
+│  model.generate(prompt, new StreamingResponseHandler() {    │
+│      @Override public void onPartialResponse(String partial) {│
+│          handler.onToken(partial);                          │
+│      }                                                      │
+│      @Override public void onComplete(Response<AiMessage> response) {│
+│          handler.onComplete();                              │
+│      }                                                      │
+│      @Override public void onError(Throwable error) {       │
+│          handler.onError((Exception) error);                │
+│      }                                                      │
+│  });                                                        │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 22.4 大型仓库解析性能优化
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   大型仓库解析优化                             │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  问题场景:                                                    │
+│  • 百万行代码仓库                                            │
+│  • 数千个 Java 文件                                          │
+│  • 解析时间可能超过 30 分钟                                  │
+│                                                             │
+│  优化策略:                                                    │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  1. 文件过滤                                                  │
+│  • 配置解析范围 (parseScope: "src/main/java")               │
+│  • 跳过测试目录、生成代码目录                                │
+│  • 跳过二进制文件 (jar, class, png, etc.)                   │
+│                                                             │
+│  @Component                                                  │
+│  public class FileFilterService {                           │
+│      private static final Set<String> SKIP_EXTENSIONS = Set.of(│
+│          ".jar", ".class", ".png", ".jpg", ".gif", ".svg", │
+│          ".xml", ".properties", ".yml", ".yaml", ".json", │
+│          ".md", ".txt", ".sql"                              │
+│      );                                                     │
+│      private static final Set<String> SKIP_DIRS = Set.of(   │
+│          "test", "tests", "target", "build", "dist",       │
+│          "node_modules", ".git", "generated"               │
+│      );                                                     │
+│                                                             │
+│      public List<Path> filterFiles(Path root) {             │
+│          return Files.walk(root)                            │
+│              .filter(Files::isRegularFile)                  │
+│              .filter(p -> !isSkipFile(p))                   │
+│              .filter(p -> isInScope(p, root))               │
+│              .collect(Collectors.toList());                 │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+│  2. 分批解析                                                  │
+│  • 将文件按包/目录分组                                       │
+│  • 每组独立解析，避免内存溢出                                │
+│  • 解析完一组立即写入 Neo4j                                  │
+│                                                             │
+│  @Service                                                    │
+│  public class ChunkedParseService {                         │
+│      private static final int CHUNK_SIZE = 100;  // 每批100个文件│
+│                                                             │
+│      public void parseLargeProject(Long projectId) {        │
+│          List<Path> files = fileFilterService.filterFiles(getRepoPath(projectId));│
+│          List<List<Path>> chunks = partition(files, CHUNK_SIZE);│
+│                                                             │
+│          for (int i = 0; i < chunks.size(); i++) {          │
+│              List<Path> chunk = chunks.get(i);              │
+│              updateProgress(projectId, (i + 1) * 100 / chunks.size());│
+│                                                             │
+│              // 解析当前批次                                 │
+│              CodeGraphResult result = mcpService.parseFiles(chunk);│
+│                                                             │
+│              // 立即写入 Neo4j                               │
+│              neo4jWriter.writeNodes(result.getNodes());      │
+│              neo4jWriter.writeEdges(result.getEdges());      │
+│                                                             │
+│              // 清理内存                                     │
+│              result.clear();                                │
+│          }                                                  │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+│  3. Git 历史优化                                              │
+│  • 不解析完整历史，只解析最近 N 个提交                       │
+│  • 或只解析最近 M 天内的提交                                 │
+│                                                             │
+│  @Component                                                  │
+│  public class GitHistoryParser {                            │
+│      private static final int MAX_COMMITS = 1000;           │
+│      private static final Duration MAX_HISTORY = Duration.ofDays(365);│
+│                                                             │
+│      public List<CommitInfo> parseHistory(Path repo) {      │
+│          Git git = Git.open(repo.toFile());                 │
+│                                                             │
+│          // 只获取最近 1000 个提交                           │
+│          Iterable<RevCommit> commits = git.log()            │
+│              .setMaxCount(MAX_COMMITS)                      │
+│              .call();                                       │
+│                                                             │
+│          return StreamSupport.stream(commits.spliterator(), false)│
+│              .map(this::toCommitInfo)                       │
+│              .collect(Collectors.toList());                 │
+│      }                                                      │
+│                                                             │
+│      // 按文件获取最后修改提交（高效方式）                    │
+│      public CommitInfo getLastCommitForFile(Path repo, String filePath) {│
+│          Git git = Git.open(repo.toFile());                 │
+│          Iterable<RevCommit> commits = git.log()            │
+│              .addPath(filePath)                             │
+│              .setMaxCount(1)                                │
+│              .call();                                       │
+│          return StreamSupport.stream(commits.spliterator(), false)│
+│              .findFirst()                                   │
+│              .map(this::toCommitInfo)                       │
+│              .orElse(null);                                 │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+│  4. Neo4j 批量写入优化                                        │
+│  • 使用 UNWIND 批量插入                                     │
+│  • 禁用索引后再批量写入，完成后重建（可选）                  │
+│                                                             │
+│  // 批量插入优化 Cypher                                       │
+│  UNWIND $nodes AS nodeData                                  │
+│  MERGE (m:Method {                                          │
+│      projectId: nodeData.projectId,                         │
+│      filePath: nodeData.filePath,                           │
+│      name: nodeData.name,                                   │
+│      startLine: nodeData.startLine                          │
+│  })                                                         │
+│  SET m.signature = nodeData.signature,                      │
+│      m.returnType = nodeData.returnType,                    │
+│      m.endLine = nodeData.endLine                           │
+│                                                             │
+│  // 批量创建关系                                             │
+│  UNWIND $edges AS edgeData                                  │
+│  MATCH (from:Method {projectId: edgeData.fromProjectId, ...})│
+│  MATCH (to:Method {projectId: edgeData.toProjectId, ...})   │
+│  MERGE (from)-[r:CALLS]->(to)                               │
+│                                                             │
+│  5. 进度反馈                                                  │
+│  • WebSocket 实时推送进度                                   │
+│  • 存储进度到数据库，前端轮询                                │
+│                                                             │
+│  @Service                                                    │
+│  public class ParseProgressService {                        │
+│      private final SimpMessagingTemplate websocket;         │
+│                                                             │
+│      public void updateProgress(Long projectId, int percent, String phase) {│
+│          ParseProgress progress = new ParseProgress(projectId, percent, phase);│
+│                                                             │
+│          // 更新数据库                                       │
+│          parseTaskRepository.updateProgress(projectId, percent);│
+│                                                             │
+│          // WebSocket 推送                                  │
+│          websocket.convertAndSend("/topic/parse/" + projectId, progress);│
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+│  6. 资源限制配置                                              │
+│  spring:                                                    │
+│    task:                                                    │
+│      execution:                                             │
+│        pool:                                                │
+│          core-size: 2                                       │
+│          max-size: 4                                        │
+│          queue-capacity: 10                                 │
+│      scheduling:                                            │
+│        pool:                                                │
+│          size: 2                                            │
+│                                                             │
+│  parse:                                                     │
+│    max-parallel-projects: 2                                 │
+│    timeout-minutes: 30                                      │
+│    chunk-size: 100                                          │
+│    max-commits: 1000                                        │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 22.5 边界情况处理
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   边界情况处理策略                            │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  1. 空项目/无代码文件                                         │
+│  ─────────────────────────────────────────────────────────  │
+│  场景: 导入的项目没有 Java 源码文件                          │
+│  处理:                                                       │
+│  • 检测源码文件数量                                          │
+│  • 文件数 = 0: 标记项目状态为 NO_SOURCE，提示用户            │
+│  • 文件数 < 10: 警告提示，但继续解析                         │
+│                                                             │
+│  if (sourceFiles.isEmpty()) {                               │
+│      project.setStatus(ProjectStatus.NO_SOURCE);            │
+│      throw new BusinessException(ErrorCode.NO_SOURCE_CODE); │
+│  }                                                          │
+│                                                             │
+│  2. 解析失败恢复                                              │
+│  ─────────────────────────────────────────────────────────  │
+│  场景: 某些文件解析失败                                      │
+│  处理:                                                       │
+│  • 记录失败文件列表                                          │
+│  • 继续解析其他文件                                          │
+│  • 最终报告成功率                                            │
+│  • 支持单独重试失败文件                                      │
+│                                                             │
+│  @Data                                                       │
+│  public class ParseResult {                                 │
+│      private int totalFiles;                                │
+│      private int successFiles;                              │
+│      private int failedFiles;                               │
+│      private List<FailedFile> failures;                     │
+│      private boolean partialSuccess;                        │
+│  }                                                          │
+│                                                             │
+│  // 前端显示                                                  │
+│  "解析完成: 98% 成功 (195/200 文件)"                         │
+│  "失败文件: [FileA.java: 语法错误, FileB.java: 编码问题]"   │
+│                                                             │
+│  3. 多语言混合项目                                            │
+│  ─────────────────────────────────────────────────────────  │
+│  场景: Java 后端 + Vue 前端混合项目                          │
+│  处理:                                                       │
+│  • 按语言分别解析                                            │
+│  • Java: codegraph 解析                                     │
+│  • Vue/JS: codegraph 解析 (支持 TypeScript/JavaScript)     │
+│  • 前后端调用关系: 通过 API 调用推断                         │
+│                                                             │
+│  // 跨语言调用关系推断                                        │
+│  // 从前端 API 调用推断后端 Controller                       │
+│  Vue Component → fetch('/api/orders') → inferred → OrderController│
+│                                                             │
+│  @Service                                                    │
+│  public class CrossLanguageAnalyzer {                       │
+│      // 分析前端 API 调用                                   │
+│      public List<ApiCall> analyzeFrontendApiCalls(List<Method> frontendMethods) {│
+│          return frontendMethods.stream()                    │
+│              .filter(m -> m.getName().contains("fetch") || m.getName().contains("axios"))│
+│              .map(m -> extractApiPath(m))                   │
+│              .collect(Collectors.toList());                 │
+│      }                                                      │
+│                                                             │
+│      // 匹配后端 Controller                                 │
+│      public void linkFrontendToBackend(Long projectId, List<ApiCall> apiCalls) {│
+│          for (ApiCall call : apiCalls) {                    │
+│              // 查找匹配的 ApiEndpoint 节点                 │
+│              Optional<ApiEndpoint> endpoint = neo4jRepository.findEndpointByPath(projectId, call.getPath());│
+│              if (endpoint.isPresent()) {                    │
+│                  // 创建跨语言调用关系                       │
+│                  neo4jRepository.createCrossLanguageCall(call.getSourceMethod(), endpoint.get());│
+│              }                                              │
+│          }                                                  │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+│  4. Git 冲突文件                                              │
+│  ─────────────────────────────────────────────────────────  │
+│  场景: 文件处于 merge conflict 状态                          │
+│  处理:                                                       │
+│  • 检测冲突标记 (<<<<<<<, =======, >>>>>>>)                 │
+│  • 跳过冲突文件，标记为 CONFLICT                             │
+│  • 提示用户解决冲突后重新解析                                │
+│                                                             │
+│  private boolean hasConflictMarkers(String content) {       │
+│      return content.contains("<<<<<<<")                     │
+│          || content.contains("=======")                     │
+│          || content.contains(">>>>>>>");                    │
+│  }                                                          │
+│                                                             │
+│  5. 二进制/非文本文件                                          │
+│  ─────────────────────────────────────────────────────────  │
+│  场景: jar、class、图片等文件                                │
+│  处理:                                                       │
+│  • 文件类型检测                                              │
+│  • 跳过非文本文件                                            │
+│  • 记录跳过文件数量                                          │
+│                                                             │
+│  private boolean isBinaryFile(Path file) {                  │
+│      String extension = getExtension(file);                 │
+│      if (BINARY_EXTENSIONS.contains(extension)) return true;│
+│                                                             │
+│      // 检测文件内容是否为文本                               │
+│      try {                                                  │
+│          String content = Files.readString(file);           │
+│          return false;                                      │
+│      } catch (MalformedInputException e) {                  │
+│          return true;                                       │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+│  6. 编码问题                                                  │
+│  ─────────────────────────────────────────────────────────  │
+│  场景: 文件编码不是 UTF-8                                    │
+│  处理:                                                       │
+│  • 尝试多种编码读取 (UTF-8, GBK, ISO-8859-1)                │
+│  • 记录编码检测结果                                          │
+│  • 无法识别编码时跳过文件                                    │
+│                                                             │
+│  private String readFileWithEncoding(Path file) {           │
+│      for (Charset encoding : ENCODINGS_TO_TRY) {            │
+│          try {                                              │
+│              return Files.readString(file, encoding);       │
+│          } catch (MalformedInputException ignored) {}       │
+│      }                                                      │
+│      throw new EncodingException("无法识别文件编码: " + file);│
+│  }                                                          │
+│                                                             │
+│  private static final List<Charset> ENCODINGS_TO_TRY = List.of(│
+│      StandardCharsets.UTF_8,                                │
+│      Charset.forName("GBK"),                                │
+│      StandardCharsets.ISO_8859_1                            │
+│  );                                                         │
+│                                                             │
+│  7. 超大单文件                                                │
+│  ─────────────────────────────────────────────────────────  │
+│  场景: 单个 Java 文件超过 5000 行                            │
+│  处理:                                                       │
+│  • 文件大小限制配置                                          │
+│  • 超大文件分段解析                                          │
+│  • 或跳过并警告                                              │
+│                                                             │
+│  parse:                                                     │
+│    max-file-lines: 5000                                     │
+│    max-file-size-mb: 10                                     │
+│                                                             │
+│  8. 网络中断恢复                                              │
+│  ─────────────────────────────────────────────────────────  │
+│  场景: Git Clone 过程中网络中断                              │
+│  处理:                                                       │
+│  • 支断点续传（部分 clone）                                  │
+│  • 记录 clone 进度                                          │
+│  • 重试机制                                                  │
+│                                                             │
+│  public void cloneWithRetry(String url, Path target, int maxRetries) {│
+│      for (int i = 0; i < maxRetries; i++) {                 │
+│          try {                                              │
+│              Git.cloneRepository()                          │
+│                  .setURI(url)                               │
+│                  .setDirectory(target.toFile())             │
+│                  .setCloneSubmodules(false)                 │
+│                  .call();                                   │
+│              return;                                        │
+│          } catch (TransportException e) {                   │
+│              log.warn("Clone 失败，重试 {}/{}: {}", i + 1, maxRetries, e.getMessage());│
+│              if (i == maxRetries - 1) {                     │
+│                  throw new GitCloneException("Clone 失败", e);│
+│              }                                              │
+│              sleep(Duration.ofSeconds(5 * (i + 1)));        │
+│          }                                                  │
+│      }                                                      │
+│  }                                                          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 二十三、详细开发计划（新增）
+
+### 23.1 项目结构设计
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   项目目录结构                                │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  code-knowledge-graph/                                      │
+│  ├── backend/                        # 后端服务              │
+│  │   ├── src/                                                │
+│  │   │   ├── main/                                          │
+│  │   │   │   ├── java/com/example/ckg/                     │
+│  │   │   │   │   ├── config/              # 配置类          │
+│  │   │   │   │   │   ├── Neo4jConfig.java                  │
+│  │   │   │   │   │   ├── LlmConfig.java                    │
+│  │   │   │   │   │   ├── SecurityConfig.java               │
+│  │   │   │   │   │   ├── WebConfig.java                    │
+│  │   │   │   │   │   └── AsyncConfig.java                  │
+│  │   │   │   │   ├── controller/          # API 控制器     │
+│  │   │   │   │   │   ├── UserController.java               │
+│  │   │   │   │   │   ├── ProjectController.java            │
+│  │   │   │   │   │   ├── QAController.java                 │
+│  │   │   │   │   │   ├── FileController.java               │
+│  │   │   │   │   │   ├── GraphController.java              │
+│  │   │   │   │   │   ├── WebhookController.java            │
+│  │   │   │   │   │   └── CredentialController.java         │
+│  │   │   │   │   ├── service/             # 业务服务       │
+│  │   │   │   │   │   ├── user/             # 用户模块      │
+│  │   │   │   │   │   │   ├── UserService.java              │
+│  │   │   │   │   │   │   ├── AuthService.java              │
+│  │   │   │   │   │   │   └── SessionService.java           │
+│  │   │   │   │   │   ├── project/           # 项目模块     │
+│  │   │   │   │   │   │   ├── ProjectService.java           │
+│  │   │   │   │   │   │   ├── GitService.java               │
+│  │   │   │   │   │   │   └ ParseTaskService.java           │
+│  │   │   │   │   │   ├── parse/             # 解析模块     │
+│  │   │   │   │   │   │   ├── ParseService.java             │
+│  │   │   │   │   │   │   ├── McpProcessPool.java           │
+│  │   │   │   │   │   │   ├── McpClientService.java         │
+│  │   │   │   │   │   │   ├── CodeGraphMapper.java          │
+│  │   │   │   │   │   │   ├── GitHistoryParser.java         │
+│  │   │   │   │   │   │   ├── Neo4jBatchWriter.java         │
+│  │   │   │   │   │   │   ├── FileFilterService.java        │
+│  │   │   │   │   │   │   └ ChunkedParseService.java        │
+│  │   │   │   │   │   ├── qa/                # 问答模块     │
+│  │   │   │   │   │   │   ├── QAService.java                │
+│  │   │   │   │   │   │   ├── IntentClassifier.java         │
+│  │   │   │   │   │   │   ├── QueryTemplateMatcher.java     │
+│  │   │   │   │   │   │   ├── CypherGenerator.java          │
+│  │   │   │   │   │   │   ├── ContextOptimizer.java         │
+│  │   │   │   │   │   │   ├── AnswerGenerator.java          │
+│  │   │   │   │   │   ├── llm/               # LLM 模块     │
+│  │   │   │   │   │   │   ├── LlmService.java               │
+│  │   │   │   │   │   │   ├── LlmProviderFactory.java       │
+│  │   │   │   │   │   │   ├── providers/                    │
+│  │   │   │   │   │   │   │   ├── OpenAiProvider.java       │
+│  │   │   │   │   │   │   │   ├── AzureProvider.java        │
+│  │   │   │   │   │   │   │   ├── OllamaProvider.java       │
+│  │   │   │   │   │   │   │   ├── QwenProvider.java         │
+│  │   │   │   │   │   │   │   └ DeepSeekProvider.java       │
+│  │   │   │   │   │   ├── webhook/           # Webhook      │
+│  │   │   │   │   │   │   ├── WebhookService.java           │
+│  │   │   │   │   │   │   ├── WebhookValidator.java         │
+│  │   │   │   │   │   │   ├── GitLabWebhookHandler.java     │
+│  │   │   │   │   │   │   └ GitHubWebhookHandler.java       │
+│  │   │   │   │   ├── repository/          # 数据访问       │
+│  │   │   │   │   │   ├── UserRepository.java               │
+│  │   │   │   │   │   ├── ProjectRepository.java            │
+│  │   │   │   │   │   ├── Neo4jNodeRepository.java          │
+│  │   │   │   │   │   ├── Neo4jEdgeRepository.java          │
+│  │   │   │   │   ├── entity/             # 实体类         │
+│  │   │   │   │   │   ├── User.java                         │
+│  │   │   │   │   │   ├── Project.java                      │
+│  │   │   │   │   │   ├── GitCredential.java                │
+│  │   │   │   │   │   ├── ParseTask.java                    │
+│  │   │   │   │   │   ├── ChatSession.java                  │
+│  │   │   │   │   │   ├── Message.java                      │
+│  │   │   │   │   ├── dto/                 # DTO            │
+│  │   │   │   │   │   ├── request/                          │
+│  │   │   │   │   │   │   ├── LoginRequest.java             │
+│  │   │   │   │   │   │   ├── ProjectCreateRequest.java     │
+│  │   │   │   │   │   │   ├── QARequest.java                │
+│  │   │   │   │   │   ├── response/                         │
+│  │   │   │   │   │   │   ├── LoginResponse.java            │
+│  │   │   │   │   │   │   ├── ProjectResponse.java          │
+│  │   │   │   │   │   │   ├── QAResponse.java               │
+│  │   │   │   │   ├── security/            # 安全           │
+│  │   │   │   │   │   ├── JwtTokenProvider.java             │
+│  │   │   │   │   │   ├── EncryptionService.java            │
+│  │   │   │   │   │   ├── FileSecurityService.java          │
+│  │   │   │   │   │   ├── CypherSecurityValidator.java      │
+│  │   │   │   │   ├── exception/           # 异常           │
+│  │   │   │   │   │   ├── BusinessException.java            │
+│  │   │   │   │   │   ├── ErrorCode.java                    │
+│  │   │   │   │   │   ├── GlobalExceptionHandler.java       │
+│  │   │   │   │   ├── common/              # 公共组件       │
+│  │   │   │   │   │   ├── Result.java                       │
+│  │   │   │   │   │   ├── PageResult.java                   │
+│  │   │   │   │   │   ├── TraceIdFilter.java                │
+│  │   │   │   │   │   ├── LoggingAspect.java                │
+│  │   │   │   │   ├── model/               # 图谱模型       │
+│  │   │   │   │   │   ├── graph/                            │
+│  │   │   │   │   │   │   ├── MethodNode.java               │
+│  │   │   │   │   │   │   ├── ClassNode.java                │
+│  │   │   │   │   │   │   ├── CommitNode.java               │
+│  │   │   │   │   │   │   ├── AuthorNode.java               │
+│  │   │   │   │   │   │   ├── GraphResult.java              │
+│  │   │   │   │   │   │   ├── NodeData.java                 │
+│  │   │   │   │   │   │   ├── EdgeData.java                 │
+│  │   │   │   │   ├── event/               # 事件           │
+│  │   │   │   │   │   ├── ParseCompleteEvent.java           │
+│  │   │   │   │   │   ├── ParseErrorEvent.java              │
+│  │   │   │   │   │   ├── ParseProgressEvent.java           │
+│  │   │   │   │   ├── util/                # 工具类         │
+│  │   │   │   │   │   ├── TokenCounter.java                 │
+│  │   │   │   │   │   ├── PathUtils.java                    │
+│  │   │   │   │   │   ├── GitUtils.java                     │
+│  │   │   │   │   │   ├── JsonUtils.java                    │
+│  │   │   │   │   ├── Application.java      # 启动类        │
+│  │   │   │   ├── resources/                                 │
+│  │   │   │   │   ├── application.yml                       │
+│  │   │   │   │   ├── application-dev.yml                   │
+│  │   │   │   │   ├── application-prod.yml                  │
+│  │   │   │   │   ├── logback-spring.xml                    │
+│  │   │   │   │   ├── prompts/              # LLM Prompts    │
+│  │   │   │   │   │   ├── intent-classification.txt         │
+│  │   │   │   │   │   ├── cypher-generation.txt             │
+│  │   │   │   │   │   ├── answer-generation.txt             │
+│  │   │   │   │   ├── neo4j/               # Neo4j 脚本     │
+│  │   │   │   │   │   ├── indexes.cypher                    │
+│  │   │   │   │   │   ├── constraints.cypher                │
+│  │   │   │   ├── test/                     # 测试          │
+│  │   │   │   │   ├── java/                                 │
+│  │   │   │   │   │   ├── service/                          │
+│  │   │   │   │   │   ├── controller/                       │
+│  │   │   │   │   │   ├── integration/                      │
+│  │   │   │   │   ├── resources/                            │
+│  │   │   │   │   │   ├── application-test.yml              │
+│  │   │   ├── pom.xml                                        │
+│  │   ├── Dockerfile                                         │
+│  │                                                           │
+│  ├── frontend/                       # 前端服务              │
+│  │   ├── src/                                                │
+│  │   │   ├── api/                      # API 调用          │
+│  │   │   │   ├── user.ts                                    │
+│  │   │   │   ├── project.ts                                 │
+│  │   │   │   ├── qa.ts                                      │
+│  │   │   │   ├── file.ts                                    │
+│  │   │   │   ├── graph.ts                                   │
+│  │   │   ├── components/               # 组件              │
+│  │   │   │   ├── common/                                   │
+│  │   │   │   │   ├── Header.vue                             │
+│  │   │   │   │   ├── Sidebar.vue                            │
+│  │   │   │   │   ├── Loading.vue                            │
+│  │   │   │   │   ├── ErrorAlert.vue                         │
+│  │   │   │   │   ├── chat/                                  │
+│  │   │   │   │   ├── ChatContainer.vue                      │
+│  │   │   │   │   ├── MessageList.vue                        │
+│  │   │   │   │   ├── MessageItem.vue                        │
+│  │   │   │   │   ├── InputBox.vue                           │
+│  │   │   │   │   ├── CitationLink.vue                       │
+│  │   │   │   │   ├── graph/                                 │
+│  │   │   │   │   ├── GraphContainer.vue                     │
+│  │   │   │   │   ├── GraphRenderer.vue                      │
+│  │   │   │   │   ├── NodeDetail.vue                         │
+│  │   │   │   │   ├── PathHighlight.vue                      │
+│  │   │   │   │   ├── code/                                  │
+│  │   │   │   │   ├── CodeViewer.vue                         │
+│  │   │   │   │   ├── FileTree.vue                           │
+│  │   │   │   │   ├── MonacoEditor.vue                       │
+│  │   │   │   │   ├── project/                               │
+│  │   │   │   │   ├── ProjectList.vue                        │
+│  │   │   │   │   ├── ProjectCard.vue                        │
+│  │   │   │   │   ├── ProjectImport.vue                      │
+│  │   │   │   │   ├── ParseProgress.vue                      │
+│  │   │   │   │   ├── WebhookConfig.vue                      │
+│  │   │   ├── views/                    # 页面              │
+│  │   │   │   ├── Login.vue                                  │
+│  │   │   │   ├── Home.vue                                   │
+│  │   │   │   ├── ProjectDetail.vue                          │
+│  │   │   │   ├── QA.vue                                     │
+│  │   │   │   ├── Graph.vue                                  │
+│  │   │   │   ├── Settings.vue                               │
+│  │   │   ├── stores/                   # 状态管理          │
+│  │   │   │   ├── user.ts                                    │
+│  │   │   │   ├── project.ts                                 │
+│  │   │   │   ├── chat.ts                                    │
+│  │   │   │   ├── graph.ts                                   │
+│  │   │   ├── router/                   # 路由              │
+│  │   │   │   ├── index.ts                                   │
+│  │   │   ├── utils/                    # 工具              │
+│  │   │   │   ├── request.ts                                 │
+│  │   │   │   ├── auth.ts                                    │
+│  │   │   │   ├── websocket.ts                               │
+│  │   │   │   ├── markdown.ts                                │
+│  │   │   ├── styles/                   # 样式              │
+│  │   │   │   ├── global.css                                 │
+│  │   │   │   ├── variables.css                              │
+│  │   │   ├── App.vue                                        │
+│  │   │   ├── main.ts                                        │
+│  │   ├── public/                                            │
+│  │   ├── package.json                                       │
+│  │   ├── vite.config.ts                                     │
+│  │   ├── tsconfig.json                                      │
+│  │   ├── Dockerfile                                         │
+│  │                                                           │
+│  ├── docker/                         # Docker 配置          │
+│  │   ├── docker-compose.yml                                │
+│  │   ├── docker-compose.dev.yml                            │
+│  │   ├── neo4j/                                            │
+│  │   │   ├── conf/                                         │
+│  │   │   │   ├── neo4j.conf                                │
+│  │   │   ├── init/                                         │
+│  │   │   │   ├── indexes.cypher                            │
+│  │   │   │   ├── constraints.cypher                        │
+│  │   │   ├── nginx/                                        │
+│  │   │   │   ├── nginx.conf                                │
+│  │                                                           │
+│  ├── docs/                           # 文档                  │
+│  │   ├── api/                                              │
+│  │   │   ├── API.md                                        │
+│  │   ├── deployment/                                       │
+│  │   │   ├── DEPLOYMENT.md                                 │
+│  │   ├── user/                                             │
+│  │   │   ├── USER_GUIDE.md                                 │
+│  │   ├── architecture/                                     │
+│  │   │   ├── ARCHITECTURE.md                               │
+│  │                                                           │
+│  ├── scripts/                        # 脚本                  │
+│  │   ├── init-neo4j.sh                                     │
+│  │   ├── build.sh                                          │
+│  │   ├── deploy.sh                                         │
+│  │                                                           │
+│  ├── .gitignore                                            │
+│  ├── README.md                                             │
+│  ├── LICENSE                                               │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 23.2 阶段一详细开发任务
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│          阶段一: MVP 核心功能 (第 1-5 周)                      │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Week 1: 基础框架搭建                                        │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  Day 1-2: 项目初始化                                         │
+│  ├── [B-001] 创建 Spring Boot 项目骨架                      │
+│  ├── [B-002] 配置 pom.xml 依赖                              │
+│  │   • spring-boot-starter-web                             │
+│  │   • spring-boot-starter-data-neo4j                      │
+│  │   • spring-boot-starter-data-jpa                        │
+│  │   • spring-boot-starter-security                        │
+│  │   • langchain4j dependencies                            │
+│  ├── [B-003] 配置 application.yml                          │
+│  │   • 数据库连接 (Neo4j, PostgreSQL, Redis)                │
+│  │   • 日志配置                                             │
+│  │   • 异步任务配置                                         │
+│  ├── [B-004] 创建前端 Vue3 项目                             │
+│  │   • vite + vue3 + typescript + pinia                    │
+│  │   • element-plus UI 库                                  │
+│  │   • axios HTTP 客户端                                   │
+│  ├── [B-005] Docker Compose 基础配置                        │
+│  │   • neo4j service                                       │
+│  │   • postgres service                                    │
+│  │   • redis service                                       │
+│                                                             │
+│  Day 3-4: 安全与认证                                         │
+│  ├── [B-006] JWT 认证实现                                   │
+│  │   • JwtTokenProvider.java                               │
+│  │   • SecurityConfig.java                                 │
+│  │   • 登录/注册 API                                        │
+│  ├── [B-007] 用户实体与 Repository                          │
+│  │   • User.java entity                                    │
+│  │   • UserRepository.java                                 │
+│  │   • UserService.java                                    │
+│  ├── [B-008] 前端登录页面                                   │
+│  │   • Login.vue                                           │
+│  │   • auth.ts store                                       │
+│  │   • 路由守卫                                            │
+│  ├── [B-009] 统一异常处理                                   │
+│  │   • ErrorCode.java                                      │
+│  │   • BusinessException.java                              │
+│  │   • GlobalExceptionHandler.java                         │
+│                                                             │
+│  Day 5: 日志与追踪                                           │
+│  ├── [B-010] 结构化日志配置                                 │
+│  │   • logback-spring.xml                                  │
+│  │   • TraceIdFilter.java                                  │
+│  │   • LoggingAspect.java                                  │
+│  ├── [B-011] API 响应统一格式                               │
+│  │   • Result.java                                         │
+│  │   • PageResult.java                                     │
+│                                                             │
+│  Week 2: 项目管理模块                                         │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  Day 1-2: 项目实体与 CRUD                                    │
+│  ├── [P-001] 项目实体设计                                   │
+│  │   • Project.java                                        │
+│  │   • GitCredential.java (加密存储)                        │
+│  │   • ParseTask.java                                      │
+│  ├── [P-002] EncryptionService 实现                         │
+│  │   • AES-256-GCM 加密                                    │
+│  │   • 凭证加密/解密                                        │
+│  ├── [P-003] ProjectRepository                              │
+│  ├── [P-004] ProjectService CRUD                            │
+│  ├── [P-005] ProjectController API                          │
+│  │   • GET /api/projects                                   │
+│  │   • POST /api/projects                                  │
+│  │   • GET /api/projects/{id}                              │
+│  │   • DELETE /api/projects/{id}                           │
+│                                                             │
+│  Day 3-4: Git 仓库操作                                       │
+│  ├── [P-006] GitService 实现                                │
+│  │   • cloneRepository()                                   │
+│  │   • pullUpdates()                                       │
+│  │   • getChangedFiles()                                   │
+│  │   • 重试机制                                            │
+│  ├── [P-007] Git 本地仓库管理                               │
+│  │   • 仓库存储路径配置                                     │
+│  │   • 仓库清理策略                                         │
+│  ├── [P-008] 前端项目列表页                                 │
+│  │   • ProjectList.vue                                     │
+│  │   • ProjectCard.vue                                     │
+│  │   • ProjectImport.vue                                   │
+│  │   • project.ts store                                    │
+│                                                             │
+│  Day 5: 项目状态管理                                         │
+│  ├── [P-009] ParseTask 状态管理                             │
+│  │   • 任务创建/更新                                        │
+│  │   • 进度记录                                            │
+│  ├── [P-010] ParseProgress 组件                             │
+│  │   • 进度显示                                            │
+│  │   • WebSocket 推送                                      │
+│                                                             │
+│  Week 3: 解析模块核心                                         │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  Day 1-2: MCP 集成                                           │
+│  ├── [M-001] MCP 进程管理                                   │
+│  │   • McpProcess.java                                     │
+│  │   • McpProcessPool.java                                 │
+│  │   • 进程启动/停止/超时                                   │
+│  ├── [M-002] MCP Client 封装                                │
+│  │   • McpClientService.java                               │
+│  │   • callTool() 方法                                     │
+│  │   • JSON 解析                                           │
+│  ├── [M-003] 技术验证 TV-01 完成                            │
+│                                                             │
+│  Day 3: 图谱映射                                             │
+│  ├── [M-004] CodeGraphMapper 实现                           │
+│  │   • codegraph 输出 → NodeData 转换                      │
+│  │   • 节点类型映射                                         │
+│  │   • 关系类型映射                                         │
+│  ├── [M-005] 技术验证 TV-02 完成                            │
+│                                                             │
+│  Day 4-5: Neo4j 写入                                         │
+│  ├── [M-006] Neo4j 批量写入                                 │
+│  │   • Neo4jBatchWriter.java                               │
+│  │   • UNWIND 批量插入                                     │
+│  │   • 事务管理                                            │
+│  ├── [M-007] Neo4j 索引初始化                               │
+│  │   • indexes.cypher                                      │
+│  │   • constraints.cypher                                  │
+│  │   • Neo4jIndexInitializer.java                          │
+│  ├── [M-008] 技术验证 TV-03 完成                            │
+│                                                             │
+│  Week 4: Git 历史解析 + QA 流程                              │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  Day 1-2: Git 历史解析                                       │
+│  ├── [G-001] GitHistoryParser 实现                          │
+│  │   • parseCommitHistory()                                │
+│  │   • parseFileHistory()                                  │
+│  │   • getLastCommitForFile()                              │
+│  ├── [G-002] Commit/Author 节点写入                         │
+│  │   • CommitNode.java                                     │
+│  │   • AuthorNode.java                                     │
+│  │   • MODIFIED_BY/LAST_MODIFIED_BY 关系                   │
+│                                                             │
+│  Day 3-5: QA 流水线骨架                                      │
+│  ├── [Q-001] QAService 骨架                                 │
+│  │   • QAService.java                                      │
+│  │   • QAController.java                                   │
+│  ├── [Q-002] IntentClassifier                               │
+│  │   • 问题理解                                            │
+│  │   • LLM 调用                                            │
+│  │   • intent-classification.txt prompt                    │
+│  ├── [Q-003] QueryTemplateMatcher                           │
+│  │   • 模板定义                                            │
+│  │   • 关键词匹配                                          │
+│  │   • 实体提取                                            │
+│  ├── [Q-004] 预定义 Cypher 模板                             │
+│  │   • CALL_CHAIN                                          │
+│  │   • IMPACT_ANALYSIS                                     │
+│  │   • AUTHOR_TRACE                                        │
+│  │   • CLASS_METHODS                                       │
+│  ├── [Q-005] CypherSecurityValidator                        │
+│  ├── [Q-006] 技术验证 TV-04 完成                            │
+│                                                             │
+│  Week 5: QA 完善 + 前端对话                                  │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  Day 1-2: QA 后端完善                                        │
+│  ├── [Q-007] Neo4jExecutor                                  │
+│  │   • Cypher 执行                                         │
+│  │   • 结果解析                                            │
+│  ├── [Q-008] ContextOptimizer                               │
+│  │   • Token 计数                                          │
+│  │   • 上下文截断                                          │
+│  ├── [Q-009] AnswerGenerator                                │
+│  │   • answer-generation.txt prompt                        │
+│  │   • 来源引用生成                                         │
+│  ├── [Q-010] QAController 完善                              │
+│  │   • POST /api/qa/sessions                               │
+│  │   • POST /api/qa/sessions/{id}/ask                      │
+│  │   • GET /api/qa/sessions/{id}/messages                  │
+│                                                             │
+│  Day 3-4: LLM 适配层                                         │
+│  ├── [L-001] LlmService 接口                                │
+│  ├── [L-002] LlmProviderFactory                             │
+│  ├── [L-003] OpenAI Provider (首发)                         │
+│  ├── [L-004] LLM 配置管理                                   │
+│  │   • LlmConfig.java                                      │
+│  │   • application.yml 配置                                │
+│                                                             │
+│  Day 5: 前端对话界面                                         │
+│  ├── [F-001] ChatContainer.vue                              │
+│  ├── [F-002] MessageList.vue                                │
+│  ├── [F-003] MessageItem.vue                                │
+│  │   • Markdown 渲染                                       │
+│  │   • 代码高亮                                            │
+│  ├── [F-004] InputBox.vue                                   │
+│  ├── [F-005] CitationLink.vue                               │
+│  ├── [F-006] qa.ts store                                    │
+│  ├── [F-007] QA.vue 页面                                    │
+│                                                             │
+│  阶段一交付验收:                                              │
+│  ─────────────────────────────────────────────────────────  │
+│  ✓ 用户登录/注册                                            │
+│  ✓ 项目导入 (Git Clone)                                     │
+│  ✓ 项目解析 (codegraph → Neo4j)                             │
+│  ✓ Git 历史解析 → 溯源节点                                   │
+│  ✓ 基础问答 (模板匹配)                                       │
+│  ✓ 单模型 LLM                                               │
+│  ✓ 前端基础功能                                              │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 23.3 阶段二详细开发任务
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│          阶段二: 体验增强 (第 6-8 周)                          │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Week 6: 图谱可视化                                          │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  Day 1-2: 后端图谱 API                                       │
+│  ├── [G-001] GraphController                                │
+│  │   • GET /api/graph/{projectId}/nodes                    │
+│  │   • GET /api/graph/{projectId}/node/{id}                │
+│  │   • GET /api/graph/{projectId}/search                   │
+│  │   • GET /api/graph/{projectId}/path                     │
+│  ├── [G-002] GraphService                                   │
+│  │   • 节点搜索                                            │
+│  │   • 调用链路径计算                                       │
+│  │   • 子图提取                                            │
+│                                                             │
+│  Day 3-5: 前端图谱可视化                                     │
+│  ├── [G-003] D3.js 集成                                     │
+│  │   • force-directed graph                                │
+│  │   • 节点/边样式                                         │
+│  ├── [G-004] GraphContainer.vue                             │
+│  ├── [G-005] GraphRenderer.vue                              │
+│  │   • 节点拖拽                                            │
+│  │   • 缩放/平移                                           │
+│  │   • 节点点击事件                                         │
+│  ├── [G-006] NodeDetail.vue                                 │
+│  │   • 节点信息面板                                         │
+│  │   • 代码定位链接                                         │
+│  ├── [G-007] PathHighlight.vue                              │
+│  │   • 调用链路径高亮                                       │
+│  ├── [G-008] Graph.vue 页面                                 │
+│  ├── [G-009] graph.ts store                                 │
+│                                                             │
+│  Week 7: 代码查看器                                          │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  Day 1-2: 后端文件 API                                       │
+│  ├── [C-001] FileController                                 │
+│  │   • GET /api/projects/{id}/files/tree                   │
+│  │   • GET /api/projects/{id}/files/{path}                 │
+│  ├── [C-002] FileService                                    │
+│  │   • 文件读取                                            │
+│  │   • 行范围提取                                          │
+│  │   • 语言检测                                            │
+│  ├── [C-003] FileSecurityService                            │
+│  │   • 路径校验                                            │
+│  │   • 路径遍历防护                                         │
+│                                                             │
+│  Day 3-5: 前端代码查看器                                     │
+│  ├── [C-004] Monaco Editor 集成                             │
+│  │   • MonacoEditor.vue                                    │
+│  │   • 大文件优化配置                                       │
+│  ├── [C-005] CodeViewer.vue                                 │
+│  │   • 代码显示                                            │
+│  │   • 行号定位                                            │
+│  │   • 语法高亮                                            │
+│  ├── [C-006] FileTree.vue                                   │
+│  │   • 文件树导航                                          │
+│  │   • 文件搜索                                            │
+│  ├── [C-007] CitationLink 点击跳转                          │
+│  │   • 定位到文件                                          │
+│  │   • 滚动到行号                                          │
+│                                                             │
+│  Week 8: 流式输出 + 多模型                                   │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  Day 1-3: 流式输出                                           │
+│  ├── [S-001] SSE Controller                                 │
+│  │   • GET /api/qa/stream                                  │
+│  │   • Flux<String> 返回                                   │
+│  ├── [S-002] StreamQAService                                │
+│  │   • 分阶段推送                                          │
+│  │   • LLM 流式调用                                         │
+│  ├── [S-003] 前端 SSE 接收                                  │
+│  │   • EventSource 集成                                    │
+│  │   • 实时渲染                                            │
+│  ├── [S-004] StreamingIndicator.vue                         │
+│                                                             │
+│  Day 4-5: 多 LLM 支持                                        │
+│  ├── [L-005] Azure Provider                                 │
+│  ├── [L-006] Ollama Provider                                │
+│  ├── [L-007] 通义千问 Provider                              │
+│  ├── [L-008] LLM 配置 API                                   │
+│  │   • GET /api/config/llm                                 │
+│  │   • PUT /api/config/llm                                 │
+│  ├── [L-009] 前端 LLM 配置页                                │
+│  │   • Settings.vue                                        │
+│  │   • ProviderSelect.vue                                  │
+│                                                             │
+│  阶段二交付验收:                                              │
+│  ─────────────────────────────────────────────────────────  │
+│  ✓ 图谱可视化 (D3.js)                                       │
+│  ✓ 代码查看器 (Monaco Editor)                               │
+│  ✓ 来源链接跳转                                              │
+│  ✓ 流式输出 (SSE)                                           │
+│  ✓ 多 LLM 支持                                               │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 23.4 阶段三详细开发任务
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│          阶段三-A: 自动化同步 (第 9-10 周)                     │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Week 9: Webhook 接收                                        │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  Day 1-2: Webhook 控制器                                     │
+│  ├── [W-001] WebhookController                              │
+│  │   • POST /api/webhook/gitlab                            │
+│  │   • POST /api/webhook/github                            │
+│  │   • POST /api/webhook/gitee                             │
+│  ├── [W-002] WebhookValidator                               │
+│  │   • GitLab: X-Gitlab-Token                              │
+│  │   • GitHub: HMAC-SHA256                                 │
+│  │   • Gitee: X-Gitee-Token                                │
+│  ├── [W-003] WebhookReplayProtection                        │
+│  │   • Redis UUID 缓存                                     │
+│  │   • 时间戳验证                                          │
+│                                                             │
+│  Day 3-4: Webhook 处理                                       │
+│  ├── [W-004] GitLabWebhookHandler                           │
+│  │   • Push Event 解析                                     │
+│  │   • Merge Request Event 解析                            │
+│  ├── [W-005] GitHubWebhookHandler                           │
+│  │   • push event 解析                                     │
+│  │   • pull_request event 解析                             │
+│  ├── [W-006] WebhookService                                 │
+│  │   • 触发增量解析                                        │
+│  │   • 通知前端更新                                        │
+│                                                             │
+│  Day 5: 前端 Webhook 配置                                    │
+│  ├── [W-007] WebhookConfig.vue                              │
+│  │   • Secret 生成                                         │
+│  │   • Webhook URL 显示                                    │
+│  │   • 平台选择                                            │
+│                                                             │
+│  Week 10: 定时同步 + 增量解析                                │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  Day 1-2: 定时同步                                           │
+│  ├── [S-001] ScheduledSyncService                           │
+│  │   • @Scheduled 定时检查                                 │
+│  │   • 远程 HEAD vs 本地对比                               │
+│  │   • 触发增量解析                                        │
+│  ├── [S-002] SyncState 管理                                 │
+│  │   • lastCommitHash 记录                                 │
+│  │   • lastSyncAt 记录                                     │
+│                                                             │
+│  Day 3-4: 增量解析                                           │
+│  ├── [I-001] IncrementalParseService                        │
+│  │   • git diff 获取变更文件                               │
+│  │   • 分类处理 (新增/修改/删除)                            │
+│  ├── [I-002] Neo4jIncrementalWriter                         │
+│  │   • 删除变更文件节点                                    │
+│  │   • 重新写入                                            │
+│  │   • 关系重建                                            │
+│                                                             │
+│  Day 5: 手动触发                                             │
+│  ├── [M-001] ParseTriggerService                            │
+│  │   • 全量触发                                            │
+│  │   • 增量触发                                            │
+│  ├── [M-002] 前端触发按钮                                   │
+│  │   • 重新解析按钮                                        │
+│  │   • 解析类型选择                                        │
+│                                                             │
+│  阶段三-A 交付验收:                                           │
+│  ─────────────────────────────────────────────────────────  │
+│  ✓ Webhook 自动触发                                          │
+│  ✓ 定时增量同步                                              │
+│  ✓ 手动触发解析                                              │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│          阶段三-B: 业务语义扩展 (第 11-12 周，可选)            │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Week 11: 业务语义推断                                        │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  Day 1-3: LLM 业务推断                                       │
+│  ├── [B-001] BusinessSemanticAnalyzer                       │
+│  │   • 分析类/方法命名                                      │
+│  │   • 分析注释                                            │
+│  │   • 推断业务域                                          │
+│  ├── [B-002] DomainInferrer                                 │
+│  │   • Domain 节点生成                                     │
+│  │   • BELONGS_DOMAIN 关系                                 │
+│  ├── [B-003] FlowInferrer                                   │
+│  │   • BusinessFlow 识别                                   │
+│  │   • BusinessStep 排序                                   │
+│  │   • IMPLEMENTS_FLOW 关系                                │
+│  ├── [B-004] EntityInferrer                                 │
+│  │   • Entity 节点生成                                     │
+│  │   • USES_ENTITY 关系                                    │
+│                                                             │
+│  Day 4-5: 批量推断                                           │
+│  ├── [B-005] BatchSemanticProcessor                         │
+│  │   • 分批处理                                            │
+│  │   • 进度报告                                            │
+│  ├── [B-006] SemanticVerification                           │
+│  │   • 推断结果校验                                        │
+│  │   • 用户确认机制                                         │
+│                                                             │
+│  Week 12: 高级查询                                           │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  Day 1-2: Cypher 生成                                        │
+│  ├── [C-001] CypherGenerator 完善                           │
+│  │   • cypher-generation.txt prompt                        │
+│  │   • Schema 提供                                         │
+│  ├── [C-002] QueryFallback                                  │
+│  │   • 生成失败时模板兜底                                  │
+│                                                             │
+│  Day 3-5: 高级模板                                           │
+│  ├── [T-001] BUSINESS_FLOW 模板                             │
+│  ├── [T-002] SERVICE_IMPACT 模板                            │
+│  ├── [T-003] ENTITY_USAGE 模板                              │
+│  ├── [T-004] API_DEPENDENCY 模板                            │
+│                                                             │
+│  阶段三-B 交付验收:                                           │
+│  ─────────────────────────────────────────────────────────  │
+│  ✓ 业务语义节点                                              │
+│  ✓ 自然语言生成 Cypher                                       │
+│  ✓ 高级查询模板                                              │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 23.5 阶段四详细开发任务
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│          阶段四: 生产就绪 (第 13-14 周)                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Week 13: Docker 部署                                        │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  Day 1-2: Dockerfile 优化                                    │
+│  ├── [D-001] backend/Dockerfile                             │
+│  │   • 多阶段构建                                          │
+│  │   • JRE 最小化                                          │
+│  ├── [D-002] frontend/Dockerfile                            │
+│  │   • nginx 部署                                          │
+│  │   • 静态资源                                            │
+│  ├── [D-003] docker-compose.yml 完善                        │
+│  │   • 网络配置                                            │
+│  │   • 资源限制                                            │
+│  │   • 健康检查                                            │
+│                                                             │
+│  Day 3-4: 环境配置                                           │
+│  ├── [E-001] application-prod.yml                           │
+│  │   • 生产数据库配置                                       │
+│  │   • 日志级别                                            │
+│  │   • 安全配置                                            │
+│  ├── [E-002] 环境变量文档                                   │
+│  │   • ENV_VARS.md                                         │
+│  │   • 密钥管理说明                                         │
+│                                                             │
+│  Day 5: 部署脚本                                             │
+│  ├── [S-001] scripts/deploy.sh                              │
+│  ├── [S-002] scripts/backup.sh                              │
+│  ├── [S-003] nginx 配置                                     │
+│  │   • 反向代理                                            │
+│  │   • SSL 配置                                            │
+│                                                             │
+│  Week 14: 文档与验收                                          │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  Day 1-2: 用户文档                                           │
+│  ├── [U-001] docs/user/USER_GUIDE.md                        │
+│  │   • 安装部署                                            │
+│  │   • 功能使用                                            │
+│  │   • 常见问题                                            │
+│  ├── [U-002] 项目导入指南                                   │
+│  │   • Git 配置                                            │
+│  │   • 解析范围设置                                         │
+│                                                             │
+│  Day 3-4: 技术文档                                           │
+│  ├── [T-001] docs/api/API.md                                │
+│  │   • OpenAPI/Swagger                                     │
+│  ├── [T-002] docs/deployment/DEPLOYMENT.md                  │
+│  │   • Docker 部署                                         │
+│  │   • K8s 部署(预留)                                      │
+│  ├── [T-003] docs/architecture/ARCHITECTURE.md              │
+│  │   • 架构图                                              │
+│  │   • 模块说明                                            │
+│                                                             │
+│  Day 5: 最终验收                                             │
+│  ├── [V-001] 功能验收测试                                   │
+│  │   • 用户登录                                            │
+│  │   • 项目导入                                            │
+│  │   • 问答测试                                            │
+│  │   • 图谱可视化                                          │
+│  │   • 代码查看                                            │
+│  │   • Webhook 测试                                         │
+│  ├── [V-002] 性能验收测试                                   │
+│  │   • 大项目解析                                          │
+│  │   • 并发问答                                            │
+│  │   • 图谱查询性能                                         │
+│  ├── [V-003] 安全验收                                       │
+│  │   • 路径遍历测试                                         │
+│  │   • Webhook 验证                                        │
+│  │   • Cypher 注入测试                                      │
+│                                                             │
+│  阶段四交付验收:                                              │
+│  ─────────────────────────────────────────────────────────  │
+│  ✓ Docker Compose 部署                                       │
+│  ✓ 生产配置                                                  │
+│  ✓ 用户手册                                                  │
+│  ✓ 部署文档                                                  │
+│  ✓ API 文档                                                  │
+│  ✓ 验收测试通过                                              │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 23.6 任务依赖关系
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   关键任务依赖图                              │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Week 1 基础框架                                             │
+│  B-001 (项目骨架) ──→ B-002 (依赖) ──→ B-003 (配置)         │
+│       │                    │                                │
+│       └──→ B-004 (前端项目)                                 │
+│       │                    │                                │
+│       └──→ B-005 (Docker 基础)                              │
+│                                                             │
+│  B-006 (JWT) ──→ B-007 (用户实体) ──→ B-008 (前端登录)      │
+│                                                             │
+│  Week 2 项目管理                                             │
+│  B-007 ──→ P-001 (项目实体) ──→ P-002 (加密服务)            │
+│       │                    │                                │
+│       └──→ P-003 (Repository) ──→ P-004 (Service)           │
+│                                      │                       │
+│                                      └──→ P-005 (Controller) │
+│                                                             │
+│  P-005 ──→ P-008 (前端项目列表)                              │
+│                                                             │
+│  Week 3 解析模块                                             │
+│  P-004 ──→ M-001 (MCP 进程池) ──→ M-002 (MCP Client)        │
+│                        │                                     │
+│                        └──→ M-004 (图谱映射)                 │
+│                                      │                       │
+│                                      └──→ M-006 (Neo4j写入)  │
+│                                             │                │
+│                                             └──→ M-007 (索引)│
+│                                                             │
+│  Week 4 QA 流程                                              │
+│  M-006 ──→ G-001 (Git历史) ──→ G-002 (溯源节点)             │
+│                                                             │
+│  L-001 (LLM接口) ──→ Q-002 (意图分类)                       │
+│                          │                                   │
+│                          └──→ Q-003 (模板匹配)               │
+│                                  │                           │
+│                                  └──→ Q-007 (执行器)         │
+│                                         │                    │
+│                                         └──→ Q-009 (答案生成)│
+│                                                             │
+│  Week 5 QA 完善                                              │
+│  L-001 ──→ L-003 (OpenAI Provider) ──→ L-004 (LLM配置)      │
+│                                               │              │
+│                                               └──→ Q-010    │
+│                                                             │
+│  Q-010 ──→ F-001 (ChatContainer) ──→ F-007 (QA页面)         │
+│                                                             │
+│  阶段一完成 ──→ 阶段二开始                                   │
+│                                                             │
+│  阶段二:                                                     │
+│  Q-007 ──→ G-001 (Graph API) ──→ G-004 (可视化)             │
+│  M-006 ──→ C-001 (File API) ──→ C-004 (Monaco)              │
+│  L-003 ──→ S-001 (SSE) ──→ S-003 (前端接收)                 │
+│  L-001 ──→ L-005/006/007 (其他 Provider)                    │
+│                                                             │
+│  阶段二完成 ──→ 阶段三-A 开始                                │
+│                                                             │
+│  阶段三-A:                                                   │
+│  P-005 ──→ W-001 (Webhook) ──→ W-004 (Handler)              │
+│  P-004 ──→ S-001 (定时同步) ──→ I-001 (增量解析)            │
+│                                                             │
+│  阶段三-A 完成 ──→ 阶段三-B (可选)                           │
+│                                                             │
+│  阶段三-B:                                                   │
+│  L-003 ──→ B-001 (业务推断) ──→ B-005 (批量处理)            │
+│  Q-002 ──→ C-001 (Cypher生成)                               │
+│                                                             │
+│  阶段三完成 ──→ 阶段四开始                                   │
+│                                                             │
+│  阶段四:                                                     │
+│  B-005 ──→ D-001 (Backend Docker)                           │
+│  F-007 ──→ D-002 (Frontend Docker)                          │
+│  D-001/002 ──→ D-003 (Compose 完善)                         │
+│  全功能 ──→ V-001/002/003 (验收测试)                        │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 修订记录
+
+| 版本 | 日期 | 修改内容 |
+|------|------|---------|
+| v1.0 | 2026-06-24 | 初始版本 |
+| v1.1 | 2026-06-24 | 根据第一轮评审意见修改：新增 MCP Client 调用方案、codegraph→Neo4j 映射规则、GraphRAG 实现架构、代码文件加载策略 |
+| v1.2 | 2026-06-24 | 根据第二轮评审意见修改：新增技术验证任务、Neo4j 索引设计、模板匹配规则详细设计、Cypher 生成 Prompt、资源需求预估、调整后的交付计划 |
+| v1.3 | 2026-06-24 | 根据第三轮评审意见修改：新增 Git 凭证加密存储、文件路径安全校验、Webhook 签名验证、Cypher 安全验证、日志规范、链路追踪、统一异常处理、API 接口列表 |
+| v1.4 | 2026-06-24 | 根据第四轮评审意见修改：新增 MCP 进程管理、Neo4j 数据一致性、LLM Token 限制与流式输出、大型仓库解析优化、边界情况处理、详细开发计划（项目结构、各阶段任务分解、任务依赖图） |
