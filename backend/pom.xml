@@ -7,19 +7,20 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.2.0</version>
+        <version>3.2.5</version>
         <relativePath/>
     </parent>
 
     <groupId>com.example</groupId>
-    <artifactId>code-knowledge-graph</artifactId>
+    <artifactId>ckg-backend</artifactId>
     <version>0.0.1-SNAPSHOT</version>
-    <name>code-knowledge-graph</name>
-    <description>Code Knowledge Graph QA System</description>
+    <name>ckg-backend</name>
+    <description>Code Knowledge Graph Backend Service</description>
 
     <properties>
         <java.version>17</java.version>
         <langchain4j.version>0.35.0</langchain4j.version>
+        <jjwt.version>0.12.5</jjwt.version>
     </properties>
 
     <dependencies>
@@ -50,7 +51,7 @@
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-websocket</artifactId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
 
         <!-- PostgreSQL -->
@@ -77,30 +78,37 @@
             <version>${langchain4j.version}</version>
         </dependency>
 
+        <!-- MCP Java SDK -->
+        <dependency>
+            <groupId>io.modelcontextprotocol</groupId>
+            <artifactId>mcp</artifactId>
+            <version>0.5.0</version>
+        </dependency>
+
         <!-- JWT -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-api</artifactId>
-            <version>0.12.3</version>
+            <version>${jjwt.version}</version>
         </dependency>
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-impl</artifactId>
-            <version>0.12.3</version>
+            <version>${jjwt.version}</version>
             <scope>runtime</scope>
         </dependency>
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-jackson</artifactId>
-            <version>0.12.3</version>
+            <version>${jjwt.version}</version>
             <scope>runtime</scope>
         </dependency>
 
-        <!-- JGit for Git operations -->
+        <!-- JGit -->
         <dependency>
             <groupId>org.eclipse.jgit</groupId>
             <artifactId>org.eclipse.jgit</artifactId>
-            <version>6.8.0.202311291450-r</version>
+            <version>6.10.0.202406031230-r</version>
         </dependency>
 
         <!-- Lombok -->
@@ -110,7 +118,7 @@
             <optional>true</optional>
         </dependency>
 
-        <!-- Logback JSON Encoder -->
+        <!-- JSON Logging -->
         <dependency>
             <groupId>net.logstash.logback</groupId>
             <artifactId>logstash-logback-encoder</artifactId>

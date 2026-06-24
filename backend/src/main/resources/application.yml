@@ -1,6 +1,6 @@
 spring:
   application:
-    name: code-knowledge-graph
+    name: ckg-backend
 
   # Database Configuration
   datasource:
@@ -8,6 +8,9 @@ spring:
     username: postgres
     password: postgres
     driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
 
   jpa:
     hibernate:
@@ -16,6 +19,7 @@ spring:
     properties:
       hibernate:
         format_sql: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
 
   # Neo4j Configuration
   neo4j:
@@ -30,28 +34,38 @@ spring:
       host: localhost
       port: 6379
       database: 0
+      timeout: 10000ms
+
+  # Jackson Configuration
+  jackson:
+    default-property-inclusion: non_null
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
 
   # Async Configuration
   task:
     execution:
       pool:
-        core-size: 2
-        max-size: 8
+        core-size: 4
+        max-size: 16
         queue-capacity: 100
+        keep-alive: 60s
     scheduling:
       pool:
-        size: 2
+        size: 4
 
 # JWT Configuration
 jwt:
-  secret: your-secret-key-at-least-256-bits-long-for-hs256-algorithm
+  secret: ckg-secret-key-at-least-256-bits-long-for-hs256-algorithm-security
   expiration: 86400000  # 24 hours
+  header: Authorization
+  prefix: "Bearer "
 
 # LLM Configuration
 llm:
   provider: openai
-  model: gpt-4
-  api-key: ${OPENAI_API_KEY:}
+  model: gpt-4o
+  api-key: ${OPENAI_API_KEY:your-api-key}
   base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
   temperature: 0.7
   max-tokens: 4000
@@ -69,13 +83,21 @@ parse:
 git:
   repos-path: ./repos
 
+# File Security
+file:
+  allowed-extensions: .java,.kt,.ts,.tsx,.js,.jsx,.vue,.py,.go,.rs
+  max-file-size: 10MB
+
 # Logging Configuration
 logging:
   level:
     root: INFO
     com.example.ckg: DEBUG
+    org.springframework.data.neo4j: DEBUG
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
 
 server:
   port: 8080
+  servlet:
+    context-path: /api
