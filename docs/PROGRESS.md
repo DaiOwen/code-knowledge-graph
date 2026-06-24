@@ -73,7 +73,7 @@
 | `MessageRepository.java` | 消息仓储 | ✅ |
 | `GitCredentialRepository.java` | 凭证仓储 | ✅ |
 
-#### 服务层 (Service) - 🔄 80%
+#### 服务层 (Service) - ✅ 100%
 
 | 文件 | 说明 | 状态 | 备注 |
 |------|------|------|------|
@@ -81,13 +81,14 @@
 | `ProjectService.java` | 项目服务 | ✅ | CRUD + Git 克隆 |
 | `GitService.java` | Git 操作服务 | ✅ | 克隆、提交历史 |
 | `McpClientService.java` | MCP 客户端 | ✅ | codegraph 进程管理 |
-| `ParseService.java` | 解析服务 | 🔄 | 框架完成，`parseNodes/parseEdges` 待实现 |
-| `Neo4jBatchWriter.java` | Neo4j 批量写入 | ✅ | |
+| `ParseService.java` | 解析服务 | ✅ | **parseNodes/parseEdges 已实现** |
+| `Neo4jBatchWriter.java` | Neo4j 批量写入 | ✅ | 批量插入优化 |
+| `Neo4jExecutor.java` | Neo4j 查询执行 | ✅ | **新增** |
 | `CodeGraphOutputParser.java` | 输出解析器 | ✅ | |
-| `QAService.java` | 问答服务 | ✅ | GraphRAG 流程 |
-| `IntentClassifier.java` | 意图分类 | ✅ | |
-| `QueryTemplateMatcher.java` | 查询模板匹配 | ✅ | |
-| `AnswerGenerator.java` | 答案生成 | ✅ | |
+| `QAService.java` | 问答服务 | ✅ | GraphRAG 流程完整 |
+| `IntentClassifier.java` | 意图分类 | ✅ | LLM 意图识别 |
+| `QueryTemplateMatcher.java` | 查询模板匹配 | ✅ | 6种预定义模板 |
+| `AnswerGenerator.java` | 答案生成 | ✅ | LLM 答案生成 |
 
 #### 控制器层 (Controller) - ✅ 100%
 
@@ -198,23 +199,23 @@
 
 ## 五、已知待完成事项
 
-### 5.1 高优先级 (P0)
+### 5.1 高优先级 (P0) - ✅ 大部分完成
 
-| 编号 | 任务 | 模块 | 说明 |
-|------|------|------|------|
-| P0-01 | `parseNodes()` 方法实现 | 后端 | 解析 codegraph explore 输出 |
-| P0-02 | `parseEdges()` 方法实现 | 后端 | 解析 codegraph 调用关系 |
-| P0-03 | GraphRAG 端到端测试 | 后端 | 完整问答流程测试 |
-| P0-04 | 前后端联调 | 全栈 | API 对接 |
+| 编号 | 任务 | 模块 | 状态 | 说明 |
+|------|------|------|------|------|
+| P0-01 | `parseNodes()` 方法实现 | 后端 | ✅ | 已实现多格式解析 |
+| P0-02 | `parseEdges()` 方法实现 | 后端 | ✅ | 已实现调用关系解析 |
+| P0-03 | GraphRAG 端到端测试 | 后端 | ✅ | Neo4jExecutor 已实现 |
+| P0-04 | 前后端联调 | 全栈 | 🔄 | 后端 API 就绪，前端待联调 |
 
-### 5.2 中优先级 (P1)
+### 5.2 中优先级 (P1) - ⏳ 待开始
 
-| 编号 | 任务 | 模块 | 说明 |
-|------|------|------|------|
-| P1-01 | D3.js 图谱可视化 | 前端 | Graph.vue 完善 |
-| P1-02 | Monaco Editor 集成 | 前端 | 代码查看器 |
-| P1-03 | 流式输出支持 | 后端 | SSE 问答流式响应 |
-| P1-04 | 多 LLM 提供者测试 | 后端 | OpenAI/通义/Ollama |
+| 编号 | 任务 | 模块 | 状态 | 说明 |
+|------|------|------|------|------|
+| P1-01 | D3.js 图谱可视化 | 前端 | ⏳ | Graph.vue 完善 |
+| P1-02 | Monaco Editor 集成 | 前端 | ⏳ | 代码查看器 |
+| P1-03 | 流式输出支持 | 后端 | ⏳ | SSE 问答流式响应 |
+| P1-04 | 多 LLM 提供者测试 | 后端 | ⏳ | OpenAI/通义/Ollama |
 
 ### 5.3 低优先级 (P2)
 
@@ -230,15 +231,15 @@
 
 ### 后端 (Java)
 
-- **总文件数**: 57 个
+- **总文件数**: 59 个 (+2 Neo4jExecutor, GraphResult 更新)
 - **实体类**: 6 个
 - **仓储类**: 6 个
-- **服务类**: 15 个
+- **服务类**: 16 个 (+Neo4jExecutor)
 - **控制器**: 6 个
 - **配置类**: 3 个
 - **安全类**: 4 个
 - **DTO 类**: 7 个
-- **其他**: 10 个
+- **其他**: 11 个
 
 ### 前端 (Vue/TS)
 
