@@ -28,6 +28,21 @@ const router = createRouter({
           component: () => import('@/views/ProjectDetail.vue')
         },
         {
+          path: 'project/:id/qa',
+          name: 'project-qa',
+          component: () => import('@/views/QA.vue')
+        },
+        {
+          path: 'project/:id/graph',
+          name: 'project-graph',
+          component: () => import('@/views/Graph.vue')
+        },
+        {
+          path: 'project/:id/files',
+          name: 'project-files',
+          component: () => import('@/components/FileViewer.vue')
+        },
+        {
           path: 'qa',
           name: 'qa',
           component: () => import('@/views/QA.vue')
