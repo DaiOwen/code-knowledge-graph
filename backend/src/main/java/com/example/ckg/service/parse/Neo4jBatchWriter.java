@@ -245,6 +245,54 @@ public class Neo4jBatchWriter {
         log.info("Deleted all nodes for project: {}", projectId);
     }
 
+    /**
+     * Delete nodes by file path (for incremental parse)
+     */
+    public void deleteNodesByFilePath(Long projectId, String filePath) {
+        neo4jClient.query("""
+            MATCH (n) WHERE n.projectId = $projectId AND n.filePath = $filePath
+            DETACH DELETE n
+            """)
+            .bind(projectId).to("projectId")
+            .bind(filePath).to("filePath")
+            .run();
+
+        log.info("Deleted nodes for file: {}", filePath);
+    }
+
+    /**
+     * Delete a specific method node by name and project
+     */
+    public void deleteMethodNode(Long projectId, String methodName) {
+        neo4jClient.query("""
+            MATCH (m:Method) WHERE m.projectId = $projectId AND m.name = $name
+            DETACH DELETE m
+            """)
+            .bind(projectId).to("projectId")
+            .bind(methodName).to("name")
+            .run();
+
+        log.debug("Deleted method node: {}", methodName);
+    }
+
+    /**
+     * Get count of nodes for a project
+     */
+    public long getNodeCount(Long projectId) {
+        var result = neo4jClient.query("""
+            MATCH (n) WHERE n.projectId = $projectId
+            RETURN count(n) as count
+            """)
+            .bind(projectId).to("projectId")
+            .fetch()
+            .one();
+
+        if (result.isPresent()) {
+            return ((Number) result.get().get("count")).longValue();
+        }
+        return 0;
+    }
+
     private <T> List<List<T>> partition(List<T> list, int size) {
         List<List<T>> partitions = new ArrayList<>();
         for (int i = 0; i < list.size(); i += size) {
