@@ -62,13 +62,37 @@ jwt:
   prefix: "Bearer "
 
 # LLM Configuration
+# Supported providers: openai, azure, qwen, dashscope, tongyi, deepseek, ollama
 llm:
   provider: openai
   model: gpt-4o
-  api-key: ${OPENAI_API_KEY:your-api-key}
-  base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
+  api-key: ${LLM_API_KEY:your-api-key}
+  base-url: ${LLM_BASE_URL:https://api.openai.com/v1}
   temperature: 0.7
-  max-tokens: 4000
+  max-tokens: 4096
+
+# Multi-LLM Provider Examples:
+#
+# OpenAI:
+# llm.provider: openai
+# llm.model: gpt-4o
+# llm.api-key: sk-xxx
+#
+# Azure OpenAI:
+# llm.provider: azure
+# llm.model: gpt-4
+# llm.base-url: https://your-resource.openai.azure.com
+# llm.api-key: your-azure-key
+#
+# Tongyi (Qwen):
+# llm.provider: qwen
+# llm.model: qwen-max
+# llm.api-key: sk-xxx
+#
+# DeepSeek:
+# llm.provider: deepseek
+# llm.model: deepseek-chat
+# llm.api-key: sk-xxx
 
 # Parse Configuration
 parse:
