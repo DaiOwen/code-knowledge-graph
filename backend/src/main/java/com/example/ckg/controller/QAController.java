@@ -11,6 +11,7 @@ import com.example.ckg.repository.ChatSessionRepository;
 import com.example.ckg.repository.MessageRepository;
 import com.example.ckg.service.qa.QAService;
 import com.example.ckg.service.qa.StreamingQAService;
+import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
@@ -23,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -37,6 +39,20 @@ public class QAController {
     private final MessageRepository messageRepository;
 
     private final ExecutorService executor = Executors.newCachedThreadPool();
+
+    @PreDestroy
+    public void cleanup() {
+        log.info("Shutting down executor service...");
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
 
     @PostMapping("/sessions")
     public Result<ChatSession> createSession(@RequestBody Map<String, Object> body,

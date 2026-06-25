@@ -3,14 +3,17 @@ package com.example.ckg.controller;
 import com.example.ckg.common.Result;
 import com.example.ckg.entity.WebhookEvent;
 import com.example.ckg.repository.ProjectRepository;
+import com.example.ckg.repository.WebhookEventRepository;
 import com.example.ckg.service.webhook.WebhookService;
 import com.example.ckg.service.parse.ParseService;
+import com.example.ckg.service.sync.IncrementalParseService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.Map;
 
 @Slf4j
@@ -20,8 +23,10 @@ import java.util.Map;
 public class WebhookController {
 
     private final WebhookService webhookService;
+    private final WebhookEventRepository webhookEventRepository;
     private final ProjectRepository projectRepository;
     private final ParseService parseService;
+    private final IncrementalParseService incrementalParseService;
 
     /**
      * GitLab Webhook endpoint
@@ -177,20 +182,20 @@ public class WebhookController {
         log.info("Triggering incremental parse for project {}, {} files changed",
             projectId, changedFiles.length);
 
-        // TODO: Implement incremental parse logic
-        // For now, trigger a full re-parse
-        // parseService.parseProject(projectId, taskId);
+        // Trigger incremental parse with commit info
+        incrementalParseService.parseIncremental(
+            projectId,
+            event.getBeforeCommit(),
+            event.getAfterCommit(),
+            changedFiles
+        );
     }
 
     /**
      * Get webhook event history
      */
     @GetMapping("/events/{projectId}")
-    public Result<?> getWebhookEvents(@PathVariable Long projectId) {
-        return Result.success(
-            projectRepository.findById(projectId)
-                .map(p -> webhookService.getClass()) // placeholder
-                .orElse(null)
-        );
+    public Result<List<WebhookEvent>> getWebhookEvents(@PathVariable Long projectId) {
+        return Result.success(webhookEventRepository.findByProjectIdOrderByCreatedAtDesc(projectId));
     }
 }

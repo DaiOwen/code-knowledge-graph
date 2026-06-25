@@ -231,7 +231,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   Search, ZoomIn, ZoomOut, Refresh, Download,
@@ -242,6 +242,7 @@ import type { GraphNode, GraphRelationship, GraphData } from '@/api/graph'
 import { getProjectGraph, getImpactAnalysis } from '@/api/graph'
 
 const route = useRoute()
+const router = useRouter()
 const projectId = computed(() => Number(route.params.id))
 
 // Refs
@@ -508,7 +509,10 @@ function exportGraph() {
 function goToFile(node: GraphNode) {
   if (node.properties.filePath && node.properties.startLine) {
     // Navigate to file viewer with line highlighted
-    console.log('Navigate to file:', node.properties.filePath, node.properties.startLine)
+    router.push({
+      path: `/project/${projectId.value}/files`,
+      query: { path: node.properties.filePath, line: node.properties.startLine }
+    })
   }
 }
 
@@ -560,7 +564,11 @@ function buildImpactTree(data: GraphData): any[] {
 function askAboutNode() {
   if (!selectedNode.value) return
   // Navigate to QA page with context
-  console.log('Ask about:', selectedNode.value.properties.name)
+  const nodeName = selectedNode.value.properties.name
+  router.push({
+    path: `/project/${projectId.value}/qa`,
+    query: { question: `谁调用了 ${nodeName} 方法？` }
+  })
 }
 
 // Lifecycle

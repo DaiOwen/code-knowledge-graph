@@ -2,6 +2,7 @@ import request from '@/utils/request'
 
 export interface QAResponse {
   answer: string
+  sessionId?: number
   citations: Array<{
     filePath: string
     line: number | null

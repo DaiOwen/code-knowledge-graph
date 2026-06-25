@@ -10,6 +10,11 @@ export interface GraphNode {
     signature?: string
     [key: string]: any
   }
+  // Position properties for D3 force layout
+  x?: number
+  y?: number
+  // Index for D3 simulation
+  index?: number
 }
 
 export interface GraphRelationship {
@@ -18,6 +23,9 @@ export interface GraphRelationship {
   startNodeId: string
   endNodeId: string
   properties?: Record<string, any>
+  // Source and target for D3 links
+  sourceId?: string
+  targetId?: string
 }
 
 export interface GraphData {
