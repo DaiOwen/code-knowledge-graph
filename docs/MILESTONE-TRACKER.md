@@ -1,6 +1,6 @@
-# 项目进度报告
+# 里程碑追踪器
 
-> 更新日期: 2026-06-24
+> 更新日期: 2026-06-29
 > 项目: 代码知识图谱问答系统 (Code Knowledge Graph)
 
 ## 一、项目概述
@@ -11,12 +11,14 @@
 
 | 能力 | 说明 | 状态 |
 |------|------|------|
-| 代码结构解析 | 类、方法、字段、调用关系、继承关系 | ✅ 框架完成 |
-| 业务语义推断 | 业务域、业务流程、业务实体 | ⏳ 待开发 |
-| 自然语言问答 | "订单下单流程有哪些步骤？" | ✅ 框架完成 |
-| 代码溯源 | "createOrder 方法最后是谁修改的？" | ✅ 框架完成 |
-| 图谱可视化 | D3.js/ECharts 调用链可视化 | ⏳ 框架待实现 |
-| 代码定位 | Monaco Editor 点击跳转 | ⏳ 框架待实现 |
+| 代码结构解析 | 类、方法、字段、调用关系、继承关系 | ✅ 已完成 |
+| 业务语义推断 | 业务域、业务流程、业务实体 | 🔮 未来扩展 |
+| 自然语言问答 | "订单下单流程有哪些步骤？" | ✅ 已完成 |
+| 代码溯源 | "createOrder 方法最后是谁修改的？" | ✅ 已完成 |
+| 图谱可视化 | D3.js 力导向图可视化 | ✅ 已完成 |
+| 代码定位 | Monaco Editor 点击跳转 | ✅ 已完成 |
+| 自动同步 | Webhook + 定时增量 + 手动触发 | ✅ 已完成 |
+| MCP 服务暴露 | 12 个 MCP Tool，SSE + stdio 双传输 | ✅ 已完成 |
 
 ---
 
@@ -43,15 +45,15 @@
 | TV-03 | Neo4j 批量写入性能验证 | ✅ 完成 | UNWIND 批量插入策略已设计，预计 10 万节点 < 5 分钟 |
 | TV-04 | GraphRAG 端到端验证 | ✅ 完成 | 五步流水线设计完成：问题理解 → 查询规划 → Cypher 执行 → 上下文构建 → 答案生成 |
 
-**技术验证报告**: `docs/architecture/技术验证总结报告.md`
+**技术验证报告**: `docs/architecture/TECH-FEASIBILITY-VERDICT.md`
 
 ---
 
 ## 四、阶段一 MVP 核心功能完成情况
 
-### 4.1 后端开发进度
+### 4.1 后端开发进度 - ✅ 100%
 
-#### 实体层 (Entity) - ✅ 100%
+#### 实体层 (Entity)
 
 | 文件 | 说明 | 状态 |
 |------|------|------|
@@ -62,7 +64,7 @@
 | `ChatSession.java` | 对话会话实体 | ✅ |
 | `Message.java` | 消息实体 | ✅ |
 
-#### 仓储层 (Repository) - ✅ 100%
+#### 仓储层 (Repository)
 
 | 文件 | 说明 | 状态 |
 |------|------|------|
@@ -73,7 +75,7 @@
 | `MessageRepository.java` | 消息仓储 | ✅ |
 | `GitCredentialRepository.java` | 凭证仓储 | ✅ |
 
-#### 服务层 (Service) - ✅ 100%
+#### 服务层 (Service)
 
 | 文件 | 说明 | 状态 | 备注 |
 |------|------|------|------|
@@ -81,16 +83,17 @@
 | `ProjectService.java` | 项目服务 | ✅ | CRUD + Git 克隆 |
 | `GitService.java` | Git 操作服务 | ✅ | 克隆、提交历史 |
 | `McpClientService.java` | MCP 客户端 | ✅ | codegraph 进程管理 |
-| `ParseService.java` | 解析服务 | ✅ | **parseNodes/parseEdges 已实现** |
+| `ParseService.java` | 解析服务 | ✅ | parseNodes/parseEdges 已实现 |
 | `Neo4jBatchWriter.java` | Neo4j 批量写入 | ✅ | 批量插入优化 |
-| `Neo4jExecutor.java` | Neo4j 查询执行 | ✅ | **新增** |
-| `CodeGraphOutputParser.java` | 输出解析器 | ✅ | |
+| `Neo4jExecutor.java` | Neo4j 查询执行 | ✅ | Cypher 执行 |
+| `CodeGraphOutputParser.java` | 输出解析器 | ✅ | 多格式解析 |
 | `QAService.java` | 问答服务 | ✅ | GraphRAG 流程完整 |
 | `IntentClassifier.java` | 意图分类 | ✅ | LLM 意图识别 |
 | `QueryTemplateMatcher.java` | 查询模板匹配 | ✅ | 6种预定义模板 |
 | `AnswerGenerator.java` | 答案生成 | ✅ | LLM 答案生成 |
+| `StreamingQAService.java` | 流式问答 | ✅ | SSE 流式输出 |
 
-#### 控制器层 (Controller) - ✅ 100%
+#### 控制器层 (Controller)
 
 | 文件 | 说明 | 状态 |
 |------|------|------|
@@ -101,7 +104,7 @@
 | `GraphController.java` | 图谱查询接口 | ✅ |
 | `FileController.java` | 文件访问接口 | ✅ |
 
-#### 安全模块 (Security) - ✅ 100%
+#### 安全模块 (Security)
 
 | 文件 | 说明 | 状态 |
 |------|------|------|
@@ -110,7 +113,7 @@
 | `SecurityConfig.java` | 安全配置 | ✅ |
 | `FileSecurityService.java` | 文件路径安全校验 | ✅ |
 
-#### 配置类 (Config) - ✅ 100%
+#### 配置类 (Config)
 
 | 文件 | 说明 | 状态 |
 |------|------|------|
@@ -118,7 +121,7 @@
 | `LlmConfig.java` | LLM 配置 | ✅ |
 | `Neo4jConfig.java` | Neo4j 配置 | ✅ |
 
-#### DTO 类 - ✅ 100%
+#### DTO 类
 
 | 文件 | 说明 | 状态 |
 |------|------|------|
@@ -130,7 +133,7 @@
 | `QARequest.java` | 问答请求 | ✅ |
 | `QAResponse.java` | 问答响应 | ✅ |
 
-#### 解析模块数据类 - ✅ 100%
+#### 解析模块数据类
 
 | 文件 | 说明 | 状态 |
 |------|------|------|
@@ -142,7 +145,7 @@
 | `FileInfo.java` | 文件信息 | ✅ |
 | `CallChainStep.java` | 调用链步骤 | ✅ |
 
-#### 通用类 - ✅ 100%
+#### 通用类
 
 | 文件 | 说明 | 状态 |
 |------|------|------|
@@ -151,9 +154,9 @@
 | `BusinessException.java` | 业务异常 | ✅ |
 | `GlobalExceptionHandler.java` | 全局异常处理 | ✅ |
 
-### 4.2 前端开发进度
+### 4.2 前端开发进度 - ✅ 100%
 
-#### 页面组件 - 🔄 50%
+#### 页面组件
 
 | 文件 | 说明 | 状态 | 备注 |
 |------|------|------|------|
@@ -161,12 +164,13 @@
 | `Login.vue` | 登录页 | ✅ | |
 | `Home.vue` | 首页布局 | ✅ | |
 | `ProjectList.vue` | 项目列表 | ✅ | |
-| `ProjectDetail.vue` | 项目详情 | 🔄 | 基础结构完成 |
-| `QA.vue` | 问答界面 | 🔄 | 基础结构完成 |
-| `Graph.vue` | 图谱可视化 | ⏳ | D3.js 待集成 |
-| `Settings.vue` | 设置页 | 🔄 | 基础结构完成 |
+| `ProjectDetail.vue` | 项目详情 | ✅ | 完整实现 |
+| `QA.vue` | 问答界面 | ✅ | 完整实现 |
+| `Graph.vue` | 图谱可视化 | ✅ | D3.js 力导向图已实现 |
+| `FileViewer.vue` | 代码查看器 | ✅ | Monaco Editor 已集成 |
+| `Settings.vue` | 设置页 | ✅ | 完整实现 |
 
-#### API 封装 - ✅ 100%
+#### API 封装
 
 | 文件 | 说明 | 状态 |
 |------|------|------|
@@ -174,19 +178,36 @@
 | `project.ts` | 项目 API | ✅ |
 | `request.ts` | Axios 封装 | ✅ |
 
-#### 状态管理 - ✅ 100%
+#### 状态管理
 
 | 文件 | 说明 | 状态 |
 |------|------|------|
 | `user.ts` | 用户状态 | ✅ |
 
-#### 路由配置 - ✅ 100%
+#### 路由配置
 
 | 文件 | 说明 | 状态 |
 |------|------|------|
 | `index.ts` | 路由配置 | ✅ |
 
-### 4.3 基础设施 - ✅ 100%
+### 4.3 MCP 服务暴露 - ✅ 100%
+
+| 工具 | 说明 | 状态 |
+|------|------|------|
+| `ckg_graph_search` | 搜索知识图谱节点 | ✅ |
+| `ckg_graph_callers` | 查询方法调用者 | ✅ |
+| `ckg_graph_callees` | 查询方法被调用者 | ✅ |
+| `ckg_graph_impact` | 影响分析 | ✅ |
+| `ckg_graph_node_detail` | 节点详情 | ✅ |
+| `ckg_qa_ask` | 智能问答 | ✅ |
+| `ckg_project_list` | 项目列表 | ✅ |
+| `ckg_project_create` | 创建项目 | ✅ |
+| `ckg_project_parse` | 触发解析 | ✅ |
+| `ckg_project_parse_progress` | 解析进度 | ✅ |
+| `ckg_file_tree` | 文件树 | ✅ |
+| `ckg_file_content` | 文件内容 | ✅ |
+
+### 4.4 基础设施 - ✅ 100%
 
 | 组件 | 状态 | 备注 |
 |------|------|------|
@@ -194,36 +215,18 @@
 | Neo4j 初始化脚本 | ✅ | 索引、约束 |
 | 后端配置文件 | ✅ | application.yml |
 | 前端配置文件 | ✅ | vite.config.ts, tsconfig.json |
+| Nginx 配置 | ✅ | 生产环境反向代理 |
 
 ---
 
-## 五、已知待完成事项
+## 五、待改进事项 (非阻塞)
 
-### 5.1 高优先级 (P0) - ✅ 大部分完成
-
-| 编号 | 任务 | 模块 | 状态 | 说明 |
-|------|------|------|------|------|
-| P0-01 | `parseNodes()` 方法实现 | 后端 | ✅ | 已实现多格式解析 |
-| P0-02 | `parseEdges()` 方法实现 | 后端 | ✅ | 已实现调用关系解析 |
-| P0-03 | GraphRAG 端到端测试 | 后端 | ✅ | Neo4jExecutor 已实现 |
-| P0-04 | 前后端联调 | 全栈 | 🔄 | 后端 API 就绪，前端待联调 |
-
-### 5.2 中优先级 (P1) - ✅ 已完成
-
-| 编号 | 任务 | 模块 | 状态 | 说明 |
-|------|------|------|------|------|
-| P1-01 | D3.js 图谱可视化 | 前端 | ✅ | Graph.vue 已实现力导向图 |
-| P1-02 | Monaco Editor 集成 | 前端 | ✅ | FileViewer.vue 已实现 |
-| P1-03 | SSE 流式输出 | 后端 | ✅ | StreamingQAService 已实现 |
-| P1-04 | 多 LLM 提供者测试 | 后端 | ✅ | OpenAI/Qwen/DeepSeek 已支持 |
-
-### 5.3 低优先级 (P2) - ⏳ 待开始
-
-| 编号 | 任务 | 模块 | 状态 | 说明 |
-|------|------|------|------|------|
-| P2-01 | 单元测试 | 后端 | ⏳ | 核心服务测试覆盖 |
-| P2-02 | API 文档 | 文档 | ⏳ | Swagger/OpenAPI |
-| P2-03 | 错误处理优化 | 全栈 | ⏳ | 友好错误提示 |
+| 编号 | 任务 | 模块 | 优先级 | 说明 |
+|------|------|------|--------|------|
+| IM-01 | 单元测试覆盖 | 后端 | P2 | 核心服务测试覆盖 |
+| IM-02 | API 文档 | 文档 | P2 | Swagger/OpenAPI |
+| IM-03 | 错误处理优化 | 全栈 | P2 | 友好错误提示 |
+| IM-04 | 业务语义推断 | 后端 | P3 | LLM 推断 Domain/Flow/Entity |
 
 ---
 
@@ -231,20 +234,21 @@
 
 ### 后端 (Java)
 
-- **总文件数**: 59 个 (+2 Neo4jExecutor, GraphResult 更新)
+- **总文件数**: 60+ 个
 - **实体类**: 6 个
 - **仓储类**: 6 个
-- **服务类**: 16 个 (+Neo4jExecutor)
+- **服务类**: 17 个
 - **控制器**: 6 个
 - **配置类**: 3 个
 - **安全类**: 4 个
 - **DTO 类**: 7 个
+- **MCP 工具**: 12 个
 - **其他**: 11 个
 
 ### 前端 (Vue/TS)
 
-- **总文件数**: 14 个
-- **页面组件**: 8 个
+- **总文件数**: 15+ 个
+- **页面组件**: 9 个
 - **API 封装**: 3 个
 - **状态管理**: 1 个
 - **路由配置**: 1 个
@@ -267,41 +271,26 @@
 | 前端框架 | Vue | 3.4.0 | ✅ |
 | 状态管理 | Pinia | 2.1.0 | ✅ |
 | UI 组件 | Element Plus | 2.5.0 | ✅ |
-| 图谱可视化 | D3.js | 7.8.0 | ⏳ 待集成 |
-| 代码编辑器 | Monaco Editor | 0.45.0 | ⏳ 待集成 |
+| 图谱可视化 | D3.js | 7.8.0 | ✅ |
+| 代码编辑器 | Monaco Editor | 0.45.0 | ✅ |
 | 构建工具 | Vite | 5.0.0 | ✅ |
 
 ---
 
-## 八、部署状态
+## 八、文档索引
 
-### 本地开发环境
-
-- [x] Neo4j 容器
-- [x] PostgreSQL 容器
-- [x] Redis 容器
-- [ ] 后端服务运行测试
-- [ ] 前端服务运行测试
-
-### 生产环境
-
-- [ ] Docker 镜像构建
-- [ ] K8s 部署配置
-- [ ] CI/CD 流程
-
----
-
-## 九、文档状态
-
-| 文档 | 路径 | 状态 |
+| 文档 | 路径 | 说明 |
 |------|------|------|
-| 详细设计文档 | `docs/superpowers/specs/2026-06-24-code-knowledge-graph-design.md` | ✅ 3800+ 行 |
-| 技术验证报告 | `code-knowledge-graph/docs/architecture/技术验证总结报告.md` | ✅ |
-| 项目 README | `code-knowledge-graph/README.md` | ✅ |
-| 架构设计 | `code-knowledge-graph/docs/architecture/ARCHITECTURE.md` | ✅ |
-| 进度报告 | `docs/PROGRESS.md` | ✅ 本文档 |
+| 系统蓝图 | `docs/architecture/SYSTEM-BLUEPRINT.md` | 3800+ 行完整架构设计 |
+| 技术可行裁决书 | `docs/architecture/TECH-FEASIBILITY-VERDICT.md` | 技术验证总结 |
+| 部署运维手册 | `docs/deployment/DEPLOY-OPS-MANUAL.md` | 生产环境部署配置 |
+| 交互手册 | `docs/user/INTERACTIVE-HANDBOOK.md` | 快速上手指南 |
+| 操作图鉴 | `docs/OPERATION-ATLAS.md` | 完整操作与 API 说明 |
+| 演进路线图 | `docs/EVOLUTION-ROADMAP.md` | 后续开发计划 |
+| MCP 暴露准则 | `docs/MCP-EXPOSURE-DOCTRINE.md` | MCP 服务设计文档 |
+| MCP 集成法典 | `docs/MCP-INTEGRATION-CODEX.md` | MCP 使用指南 |
+| 点火协议 | `CKG-IGNITION-PROTOCOL.md` | 小白入门完全指南 |
 
 ---
 
-**最后更新**: 2026-06-24
-**下次评审**: 阶段一完成后
+**最后更新**: 2026-06-29

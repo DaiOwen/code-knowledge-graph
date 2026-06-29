@@ -73,11 +73,11 @@ npm run dev
 
 | 文档 | 说明 |
 |------|------|
-| [**使用说明**](docs/USAGE.md) | 完整使用指南：快速启动、项目管理、代码同步、智能问答 |
-| [部署指南](docs/deployment/DEPLOYMENT.md) | 生产环境部署配置 |
-| [用户手册](docs/user/USER_GUIDE.md) | 功能使用说明 |
-| [架构设计](docs/architecture/ARCHITECTURE.md) | 系统架构文档 |
-| [进度报告](docs/PROGRESS.md) | 开发进度追踪 |
+| [**操作图鉴**](docs/OPERATION-ATLAS.md) | 完整使用指南：快速启动、项目管理、代码同步、智能问答 |
+| [部署运维手册](docs/deployment/DEPLOY-OPS-MANUAL.md) | 生产环境部署与运维配置 |
+| [交互手册](docs/user/INTERACTIVE-HANDBOOK.md) | 功能使用说明 |
+| [系统蓝图](docs/architecture/SYSTEM-BLUEPRINT.md) | 系统架构设计文档 |
+| [里程碑追踪器](docs/MILESTONE-TRACKER.md) | 开发进度与里程碑追踪 |
 
 ## 🎯 使用示例
 
@@ -124,8 +124,8 @@ code-knowledge-graph/
 ├── docker/                  # Docker 配置
 │   └── nginx/               # Nginx 配置
 ├── docs/                    # 文档
-│   ├── USAGE.md             # 详细使用说明 ⭐
-│   ├── PROGRESS.md          # 开发进度
+│   ├── OPERATION-ATLAS.md   # 操作图鉴 ⭐
+│   ├── MILESTONE-TRACKER.md # 里程碑追踪
 │   ├── deployment/          # 部署文档
 │   └── user/                # 用户手册
 ├── docker-compose.yml       # 开发环境编排
