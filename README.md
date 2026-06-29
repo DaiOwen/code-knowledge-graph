@@ -73,11 +73,11 @@ npm run dev
 
 | 文档 | 说明 |
 |------|------|
-| [**操作图鉴**](docs/OPERATION-ATLAS.md) | 完整使用指南：快速启动、项目管理、代码同步、智能问答 |
-| [部署运维手册](docs/deployment/DEPLOY-OPS-MANUAL.md) | 生产环境部署与运维配置 |
-| [交互手册](docs/user/INTERACTIVE-HANDBOOK.md) | 功能使用说明 |
-| [系统蓝图](docs/architecture/SYSTEM-BLUEPRINT.md) | 系统架构设计文档 |
-| [里程碑追踪器](docs/MILESTONE-TRACKER.md) | 开发进度与里程碑追踪 |
+| [**完整操作手册**](docs/完整操作手册.md) | 快速启动、项目管理、代码同步、智能问答、API 接口 |
+| [部署运维指南](docs/deployment/部署运维指南.md) | 生产环境部署与运维配置 |
+| [用户快速上手](docs/user/用户快速上手.md) | 5 分钟快速上手指南 |
+| [系统架构设计](docs/architecture/系统架构设计.md) | 系统架构与详细设计文档 |
+| [项目进度与里程碑](docs/项目进度与里程碑.md) | 开发进度与里程碑追踪 |
 
 ## 🎯 使用示例
 
@@ -124,10 +124,10 @@ code-knowledge-graph/
 ├── docker/                  # Docker 配置
 │   └── nginx/               # Nginx 配置
 ├── docs/                    # 文档
-│   ├── OPERATION-ATLAS.md   # 操作图鉴 ⭐
-│   ├── MILESTONE-TRACKER.md # 里程碑追踪
-│   ├── deployment/          # 部署文档
-│   └── user/                # 用户手册
+│   ├── 完整操作手册.md       # 完整操作与 API 说明 ⭐
+│   ├── 项目进度与里程碑.md   # 开发进度追踪
+│   ├── 部署运维指南.md       # 生产部署与运维
+│   ├── 用户快速上手.md       # 5 分钟上手指南
 ├── docker-compose.yml       # 开发环境编排
 ├── docker-compose.prod.yml  # 生产环境编排
 └── .env.example             # 环境变量模板
