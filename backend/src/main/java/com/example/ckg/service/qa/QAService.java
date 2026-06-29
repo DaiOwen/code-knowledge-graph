@@ -4,6 +4,8 @@ import com.example.ckg.dto.request.QARequest;
 import com.example.ckg.dto.response.QAResponse;
 import com.example.ckg.entity.ChatSession;
 import com.example.ckg.entity.Message;
+import com.example.ckg.exception.BusinessException;
+import com.example.ckg.common.ErrorCode;
 import com.example.ckg.repository.ChatSessionRepository;
 import com.example.ckg.repository.MessageRepository;
 import dev.langchain4j.model.chat.ChatLanguageModel;
@@ -30,11 +32,17 @@ public class QAService {
     private final Neo4jExecutor neo4jExecutor;
     private final AnswerGenerator answerGenerator;
 
+    // Allowed characters for entity names (alphanumeric, underscore, dot, dollar sign - valid Java identifier chars)
+    private static final String ENTITY_NAME_PATTERN = "^[a-zA-Z_$][a-zA-Z0-9_$]*$";
+
     @Transactional
     public QAResponse ask(QARequest request, Long userId) {
         String question = request.getQuestion();
         Long projectId = request.getProjectId();
         Long sessionId = request.getSessionId();
+
+        // Validate request
+        validateRequest(request);
 
         // Step 1: Classify intent
         log.info("Classifying intent for question: {}", question);
@@ -47,8 +55,12 @@ public class QAService {
         if (templateOpt.isPresent()) {
             QueryTemplateMatcher.QueryTemplate template = templateOpt.get();
             String entity = intent.getEntities().isEmpty() ? "" : intent.getEntities().get(0).getName();
+
+            // Validate entity name to prevent Cypher injection
+            validateEntityName(entity);
+
             cypher = template.getCypher()
-                .replace("$entity", "\"" + entity + "\"")
+                .replace("$entity", "\"" + escapeCypherString(entity) + "\"")
                 .replace("$projectId", String.valueOf(projectId));
         } else {
             // Fallback: keyword matching
@@ -56,7 +68,7 @@ public class QAService {
             if (templateOpt.isPresent()) {
                 cypher = templateOpt.get().getCypher()
                     .replace("$projectId", String.valueOf(projectId))
-                    .replace("$entity", "\"\""); // Empty entity
+                    .replace("$entity", "\"\"");
             } else {
                 // No template matched, return generic response
                 return QAResponse.builder()
@@ -78,14 +90,7 @@ public class QAService {
         String answer = answerGenerator.generate(question, graphResult);
 
         // Step 5: Build citations
-        List<QAResponse.Citation> citations = graphResult.getNodes().stream()
-            .filter(n -> n.getProperties() != null && n.getProperties().containsKey("filePath"))
-            .map(n -> QAResponse.Citation.builder()
-                .filePath((String) n.getProperties().get("filePath"))
-                .line(n.getProperties().containsKey("startLine") ?
-                    ((Number) n.getProperties().get("startLine")).intValue() : null)
-                .build())
-            .collect(Collectors.toList());
+        List<QAResponse.Citation> citations = buildCitations(graphResult);
 
         // Step 6: Save message history
         if (sessionId != null) {
@@ -96,6 +101,88 @@ public class QAService {
             .answer(answer)
             .citations(citations)
             .build();
+    }
+
+    /**
+     * Validate the QA request
+     */
+    private void validateRequest(QARequest request) {
+        if (request.getProjectId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "项目ID不能为空");
+        }
+        if (request.getQuestion() == null || request.getQuestion().trim().isEmpty()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "问题不能为空");
+        }
+        if (request.getQuestion().length() > 1000) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "问题长度不能超过1000个字符");
+        }
+    }
+
+    /**
+     * Validate entity name to prevent Cypher injection
+     */
+    private void validateEntityName(String entity) {
+        if (entity == null || entity.isEmpty()) {
+            return; // Empty entity is allowed
+        }
+
+        // Check for valid Java identifier pattern
+        // Allow qualified names like "ClassName.methodName"
+        String[] parts = entity.split("\\.");
+        for (String part : parts) {
+            if (!part.matches(ENTITY_NAME_PATTERN)) {
+                log.warn("Invalid entity name detected: {}", entity);
+                throw new BusinessException(ErrorCode.CYPHER_INJECTION, "无效的方法名或类名格式");
+            }
+        }
+
+        // Additional check for dangerous keywords
+        String lowerEntity = entity.toLowerCase();
+        String[] dangerousKeywords = {"match", "create", "delete", "set", "merge", "remove", "drop", "call", "load", "with"};
+        for (String keyword : dangerousKeywords) {
+            if (lowerEntity.equals(keyword)) {
+                throw new BusinessException(ErrorCode.CYPHER_INJECTION, "实体名包含保留关键字");
+            }
+        }
+    }
+
+    /**
+     * Escape special characters for safe Cypher string literal
+     */
+    private String escapeCypherString(String str) {
+        if (str == null) return "";
+        // Escape backslash first, then quotes
+        return str.replace("\\", "\\\\")
+                  .replace("\"", "\\\"")
+                  .replace("'", "\\'");
+    }
+
+    /**
+     * Build citations from graph result
+     */
+    private List<QAResponse.Citation> buildCitations(GraphResult graphResult) {
+        if (graphResult == null || graphResult.getNodes() == null) {
+            return Collections.emptyList();
+        }
+
+        return graphResult.getNodes().stream()
+            .filter(n -> n.getProperties() != null && n.getProperties().containsKey("filePath"))
+            .map(n -> {
+                Integer line = null;
+                if (n.getProperties().containsKey("startLine") && n.getProperties().get("startLine") != null) {
+                    Object lineObj = n.getProperties().get("startLine");
+                    if (lineObj instanceof Number) {
+                        line = ((Number) lineObj).intValue();
+                    }
+                }
+
+                return QAResponse.Citation.builder()
+                    .filePath((String) n.getProperties().get("filePath"))
+                    .line(line)
+                    .build();
+            })
+            .distinct()
+            .collect(Collectors.toList());
     }
 
     private void saveMessage(Long sessionId, Long userId, Long projectId,

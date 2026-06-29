@@ -1,5 +1,6 @@
 package com.example.ckg.service.parse;
 
+import com.example.ckg.service.project.CommitInfo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.neo4j.core.Neo4jClient;

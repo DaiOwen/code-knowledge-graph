@@ -20,6 +20,7 @@ public enum ErrorCode {
     PROJECT_PARSING(2002, "项目正在解析中"),
     GIT_CLONE_FAILED(2003, "Git 仓库克隆失败"),
     PROJECT_EXISTS(2004, "项目已存在"),
+    GIT_ERROR(2005, "Git 操作失败"),
 
     // 解析相关 3000-3999
     MCP_CALL_FAILED(3001, "MCP 调用失败"),

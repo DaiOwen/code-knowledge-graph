@@ -14,6 +14,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
@@ -31,6 +33,7 @@ public class WebhookService {
     private final ObjectMapper objectMapper;
 
     private static final long REPLAY_PROTECTION_WINDOW = 300; // 5 minutes
+    private static final String HMAC_SHA256_ALGORITHM = "HmacSHA256";
 
     /**
      * Validate GitLab webhook token
@@ -223,23 +226,33 @@ public class WebhookService {
         return new String[0];
     }
 
+    /**
+     * Compute HMAC-SHA256 (correct implementation using javax.crypto.Mac)
+     */
     private String computeHmacSha256(String secret, String payload) throws Exception {
-        MessageDigest md = MessageDigest.getInstance("SHA-256");
-        md.update(secret.getBytes(StandardCharsets.UTF_8));
-        byte[] hash = md.digest(payload.getBytes(StandardCharsets.UTF_8));
-        return bytesToHex(hash);
+        Mac mac = Mac.getInstance(HMAC_SHA256_ALGORITHM);
+        SecretKeySpec secretKeySpec = new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), HMAC_SHA256_ALGORITHM);
+        mac.init(secretKeySpec);
+        byte[] hmacBytes = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));
+        return bytesToHex(hmacBytes);
     }
 
+    /**
+     * Compute SHA-256 hash
+     */
     private String computeSha256(String input) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] hash = md.digest(input.getBytes(StandardCharsets.UTF_8));
             return bytesToHex(hash);
         } catch (Exception e) {
-            return input.hashCode() + "";
+            return String.valueOf(input.hashCode());
         }
     }
 
+    /**
+     * Convert bytes to hexadecimal string
+     */
     private String bytesToHex(byte[] bytes) {
         StringBuilder sb = new StringBuilder();
         for (byte b : bytes) {
@@ -248,6 +261,9 @@ public class WebhookService {
         return sb.toString();
     }
 
+    /**
+     * Decode hexadecimal string to bytes
+     */
     private byte[] hexDecode(String hex) {
         int len = hex.length();
         byte[] data = new byte[len / 2];

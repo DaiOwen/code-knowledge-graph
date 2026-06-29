@@ -48,14 +48,14 @@ public class AnswerGenerator {
     }
 
     private String buildContext(GraphResult result) {
-        if (result.getNodes() == null || result.getNodes().isEmpty()) {
+        if (result == null || result.getNodes() == null || result.getNodes().isEmpty()) {
             return "查询结果为空";
         }
 
         StringBuilder sb = new StringBuilder();
         sb.append("找到以下相关信息：\n\n");
 
-        for (GraphResult.NodeResult node : result.getNodes()) {
+        for (GraphResult.Node node : result.getNodes()) {
             sb.append("- **").append(node.getName()).append("**");
             if (node.getProperties() != null) {
                 Map<String, Object> props = node.getProperties();
@@ -74,6 +74,10 @@ public class AnswerGenerator {
                 }
                 if (props.containsKey("authorName")) {
                     sb.append("\n  作者: ").append(props.get("authorName"));
+                }
+                if (props.containsKey("name") && !props.get("name").equals(node.getName())) {
+                    // Handle case where name might be different
+                    sb.append("\n  名称: ").append(props.get("name"));
                 }
             }
             sb.append("\n");

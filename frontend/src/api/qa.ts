@@ -37,11 +37,14 @@ export function askQuestion(data: {
 }
 
 /**
- * Get chat sessions for a project
+ * Get chat sessions list
+ * Note: Backend endpoint is GET /qa/sessions (with optional projectId query param)
  */
-export function getChatSessions(projectId: number) {
+export function getChatSessions(projectId?: number) {
+  const params = projectId ? { projectId } : {}
   return request.get<any, { success: boolean; data: ChatSession[] }>(
-    `/qa/sessions/${projectId}`
+    '/qa/sessions',
+    { params }
   )
 }
 
@@ -60,7 +63,7 @@ export function getSessionMessages(sessionId: number) {
 export function createSession(projectId: number, title?: string) {
   return request.post<any, { success: boolean; data: ChatSession }>(
     `/qa/sessions`,
-    { projectId, title }
+    { projectId, title: title || '新对话' }
   )
 }
 
@@ -71,4 +74,61 @@ export function deleteSession(sessionId: number) {
   return request.delete<any, { success: boolean }>(
     `/qa/sessions/${sessionId}`
   )
+}
+
+/**
+ * Ask in a specific session
+ */
+export function askInSession(sessionId: number, data: {
+  projectId: number
+  question: string
+}) {
+  return request.post<any, { success: boolean; data: QAResponse }>(
+    `/qa/sessions/${sessionId}/ask`,
+    data
+  )
+}
+
+/**
+ * Stream answer via SSE
+ */
+export function streamAnswer(data: {
+  projectId: number
+  question: string
+  sessionId?: number
+}, callbacks: {
+  onToken: (token: string) => void
+  onComplete: (response: QAResponse) => void
+  onError: (error: Error) => void
+}) {
+  const eventSource = new EventSource(
+    `/api/qa/stream?projectId=${data.projectId}&question=${encodeURIComponent(data.question)}${data.sessionId ? `&sessionId=${data.sessionId}` : ''}`,
+    { withCredentials: true }
+  )
+
+  eventSource.addEventListener('token', (event) => {
+    callbacks.onToken(event.data)
+  })
+
+  eventSource.addEventListener('complete', (event) => {
+    try {
+      const response = JSON.parse(event.data) as QAResponse
+      callbacks.onComplete(response)
+    } catch (e) {
+      callbacks.onError(new Error('Failed to parse response'))
+    }
+    eventSource.close()
+  })
+
+  eventSource.addEventListener('error', (event) => {
+    callbacks.onError(new Error(event.data || 'Stream error'))
+    eventSource.close()
+  })
+
+  eventSource.onerror = () => {
+    callbacks.onError(new Error('Connection error'))
+    eventSource.close()
+  }
+
+  return eventSource
 }

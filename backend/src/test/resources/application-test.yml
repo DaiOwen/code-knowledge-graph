@@ -1,0 +1,57 @@
+# Test application configuration
+spring:
+  application:
+    name: ckg-backend-test
+
+  # H2 in-memory database for testing
+  datasource:
+    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.H2Dialect
+
+  # Disable Neo4j for unit tests
+  neo4j:
+    uri: bolt://localhost:7687
+    authentication:
+      username: neo4j
+      password: test
+
+  # Disable Redis for unit tests
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+# JWT Configuration
+jwt:
+  secret: test-secret-key-at-least-256-bits-long-for-testing
+  expiration: 3600000
+  header: Authorization
+  prefix: "Bearer "
+
+# LLM Configuration (mock for tests)
+llm:
+  provider: openai
+  model: gpt-4o
+  api-key: test-api-key
+  base-url: https://api.openai.com/v1
+  temperature: 0.7
+
+# Git Repository Storage
+git:
+  repos-path: ./test-repos
+
+logging:
+  level:
+    root: WARN
+    com.example.ckg: DEBUG

@@ -6,17 +6,18 @@ import com.example.ckg.entity.ChatSession;
 import com.example.ckg.entity.Message;
 import com.example.ckg.repository.ChatSessionRepository;
 import com.example.ckg.repository.MessageRepository;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.model.StreamingResponseHandler;
 import dev.langchain4j.model.chat.StreamingChatLanguageModel;
-import dev.langchain4j.model.chat.response.ChatResponse;
-import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import dev.langchain4j.model.output.Response;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
 
 @Slf4j
 @Service
@@ -41,29 +42,29 @@ public class StreamingQAService {
             // Step 1: Classify intent
             IntentResult intent = intentClassifier.classify(question);
 
-            // Step 2: Build context from graph
-            String context = buildContext(intent, projectId);
+            // Step 2: Build context from graph and collect citation data
+            CitationContext citationContext = buildContextWithCitations(intent, projectId);
 
             // Step 3: Build prompt
-            String prompt = buildPrompt(question, context);
+            String prompt = buildPrompt(question, citationContext.context);
 
             // Step 4: Stream answer
             StringBuilder fullAnswer = new StringBuilder();
             CompletableFuture<Void> streamingFuture = new CompletableFuture<>();
 
-            streamingLlm.chat(prompt, new StreamingChatResponseHandler() {
+            streamingLlm.generate(prompt, new StreamingResponseHandler<AiMessage>() {
                 @Override
-                public void onPartialResponse(String partialResponse) {
-                    fullAnswer.append(partialResponse);
-                    callback.onToken(partialResponse);
+                public void onNext(java.lang.String token) {
+                    fullAnswer.append(token);
+                    callback.onToken(token);
                 }
 
                 @Override
-                public void onCompleteResponse(ChatResponse completeResponse) {
-                    // Build final response
-                    QAResponse response = QAResponse.builder()
+                public void onComplete(Response<AiMessage> response) {
+                    // Build final response with actual citations
+                    QAResponse qaResponse = QAResponse.builder()
                         .answer(fullAnswer.toString())
-                        .citations(buildCitations(intent, projectId))
+                        .citations(citationContext.citations)
                         .build();
 
                     // Save to history if session exists
@@ -71,7 +72,7 @@ public class StreamingQAService {
                         saveMessages(request.getSessionId(), userId, projectId, question, fullAnswer.toString());
                     }
 
-                    callback.onComplete(response);
+                    callback.onComplete(qaResponse);
                     streamingFuture.complete(null);
                 }
 
@@ -86,8 +87,9 @@ public class StreamingQAService {
             // Wait for streaming to complete
             streamingFuture.get();
 
-        } catch (InterruptedException | ExecutionException e) {
+        } catch (InterruptedException e) {
             log.error("Streaming interrupted", e);
+            Thread.currentThread().interrupt();
             callback.onError(new Exception("回答生成中断"));
         } catch (Exception e) {
             log.error("Streaming failed", e);
@@ -95,8 +97,12 @@ public class StreamingQAService {
         }
     }
 
-    private String buildContext(IntentResult intent, Long projectId) {
+    /**
+     * Build context and extract citations from graph query results
+     */
+    private CitationContext buildContextWithCitations(IntentResult intent, Long projectId) {
         StringBuilder context = new StringBuilder();
+        List<QAResponse.Citation> citations = new ArrayList<>();
 
         // Match template and execute query
         var templateOpt = templateMatcher.match(intent);
@@ -104,7 +110,7 @@ public class StreamingQAService {
             var template = templateOpt.get();
             String entity = intent.getEntities().isEmpty() ? "" : intent.getEntities().get(0).getName();
             String cypher = template.getCypher()
-                .replace("$entity", "\"" + entity + "\"")
+                .replace("$entity", "\"" + escapeCypher(entity) + "\"")
                 .replace("$projectId", String.valueOf(projectId));
 
             // Execute query
@@ -118,13 +124,20 @@ public class StreamingQAService {
                         context.append(entry.getKey()).append(": ").append(entry.getValue()).append(", ");
                     }
                     context.append("\n");
+
+                    // Extract citation from row
+                    QAResponse.Citation citation = extractCitationFromRow(row);
+                    if (citation != null) {
+                        citations.add(citation);
+                    }
                 }
             } else {
                 context.append("未找到相关信息。\n");
             }
         } else {
-            // Try keyword matching
-            var keywordTemplateOpt = templateMatcher.matchByKeywords(intent.getQuestion());
+            // Try keyword matching using the intent type as fallback
+            String questionText = intent.getIntent();
+            var keywordTemplateOpt = templateMatcher.matchByKeywords(questionText);
             if (keywordTemplateOpt.isPresent()) {
                 var template = keywordTemplateOpt.get();
                 String cypher = template.getCypher().replace("$projectId", String.valueOf(projectId));
@@ -134,12 +147,72 @@ public class StreamingQAService {
                     context.append("相关结果：\n");
                     results.forEach(row -> {
                         context.append("- ").append(row).append("\n");
+
+                        // Extract citation from row
+                        QAResponse.Citation citation = extractCitationFromRow(row);
+                        if (citation != null) {
+                            citations.add(citation);
+                        }
                     });
                 }
             }
         }
 
-        return context.toString();
+        return new CitationContext(context.toString(), citations);
+    }
+
+    /**
+     * Extract citation information from a query result row
+     */
+    private QAResponse.Citation extractCitationFromRow(Map<String, Object> row) {
+        String filePath = null;
+        Integer line = null;
+
+        // Try to extract file path
+        if (row.containsKey("filePath") && row.get("filePath") != null) {
+            filePath = String.valueOf(row.get("filePath"));
+        } else if (row.containsKey("file") && row.get("file") != null) {
+            filePath = String.valueOf(row.get("file"));
+        }
+
+        // Try to extract line number
+        if (row.containsKey("startLine") && row.get("startLine") != null) {
+            line = toInteger(row.get("startLine"));
+        } else if (row.containsKey("line") && row.get("line") != null) {
+            line = toInteger(row.get("line"));
+        }
+
+        // Only create citation if we have a file path
+        if (filePath != null && !filePath.isEmpty()) {
+            return QAResponse.Citation.builder()
+                .filePath(filePath)
+                .line(line)
+                .build();
+        }
+
+        return null;
+    }
+
+    /**
+     * Convert object to Integer safely
+     */
+    private Integer toInteger(Object value) {
+        if (value == null) return null;
+        if (value instanceof Integer) return (Integer) value;
+        if (value instanceof Number) return ((Number) value).intValue();
+        try {
+            return Integer.parseInt(String.valueOf(value));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Escape special characters for Cypher query
+     */
+    private String escapeCypher(String str) {
+        if (str == null) return "";
+        return str.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private String buildPrompt(String question, String context) {
@@ -159,13 +232,6 @@ public class StreamingQAService {
 
             ## 回答
             """, question, context);
-    }
-
-    private List<QAResponse.Citation> buildCitations(IntentResult intent, Long projectId) {
-        // Extract citations from graph results
-        List<QAResponse.Citation> citations = new ArrayList<>();
-        // This would be populated based on actual query results
-        return citations;
     }
 
     private void saveMessages(Long sessionId, Long userId, Long projectId,
@@ -204,5 +270,18 @@ public class StreamingQAService {
         void onToken(String token);
         void onComplete(QAResponse response);
         void onError(Exception e);
+    }
+
+    /**
+     * Internal class to hold context and citations together
+     */
+    private static class CitationContext {
+        final String context;
+        final List<QAResponse.Citation> citations;
+
+        CitationContext(String context, List<QAResponse.Citation> citations) {
+            this.context = context;
+            this.citations = citations;
+        }
     }
 }

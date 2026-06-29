@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -163,7 +164,8 @@ public class SyncService {
     /**
      * Get list of commits since last sync
      */
-    public RevCommit[] getNewCommits(Project project, String fromCommit, String toCommit) {
+    public List<RevCommit> getNewCommits(Project project, String fromCommit, String toCommit) {
+        List<RevCommit> commits = new ArrayList<>();
         try {
             Repository repository = openRepository(project.getLocalPath());
 
@@ -171,35 +173,41 @@ public class SyncService {
             ObjectId toId = repository.resolve(toCommit);
 
             if (fromId == null || toId == null) {
-                return new RevCommit[0];
+                return commits;
             }
 
             try (RevWalk walk = new RevWalk(repository)) {
                 walk.markStart(walk.parseCommit(toId));
                 walk.markUninteresting(walk.parseCommit(fromId));
 
-                return walk.iterator().hasNext() ?
-                    walk.toArray(new RevCommit[0]) : new RevCommit[0];
+                for (RevCommit commit : walk) {
+                    commits.add(commit);
+                }
             }
 
         } catch (IOException e) {
             log.error("Failed to get new commits", e);
-            return new RevCommit[0];
         }
+        return commits;
     }
 
     private String[] getChangedFiles(Repository repository, String fromCommit, String toCommit) {
         try {
-            // Use git diff to get changed files
+            ObjectId oldTree = repository.resolve(fromCommit + "^{tree}");
+            ObjectId newTree = repository.resolve(toCommit + "^{tree}");
+
+            if (oldTree == null || newTree == null) {
+                return new String[0];
+            }
+
             Git git = new Git(repository);
-
-            var diffEntries = git.diff()
-                .setOldTree(org.eclipse.jgit.lib.ObjectReader.class.cast(null))
-                .call();
-
-            // For simplicity, return empty array - actual implementation would use diff
-            return new String[0];
-
+            try (org.eclipse.jgit.diff.DiffFormatter diffFormatter = new org.eclipse.jgit.diff.DiffFormatter(java.io.OutputStream.nullOutputStream())) {
+                diffFormatter.setRepository(repository);
+                List<org.eclipse.jgit.diff.DiffEntry> diffs = diffFormatter.scan(oldTree, newTree);
+                return diffs.stream()
+                    .map(org.eclipse.jgit.diff.DiffEntry::getNewPath)
+                    .toArray(String[]::new);
+            }
         } catch (Exception e) {
             log.error("Failed to get changed files", e);
             return new String[0];

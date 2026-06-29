@@ -1,5 +1,7 @@
 package com.example.ckg.service.qa;
 
+import com.example.ckg.common.ErrorCode;
+import com.example.ckg.exception.BusinessException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.neo4j.core.Neo4jClient;
@@ -55,9 +57,12 @@ public class Neo4jExecutor {
                 .relationships(relationships)
                 .build();
 
+        } catch (BusinessException e) {
+            // Re-throw business exceptions as-is
+            throw e;
         } catch (Exception e) {
-            log.error("Cypher execution failed: {}", e.getMessage());
-            throw new RuntimeException("查询执行失败: " + e.getMessage());
+            log.error("Cypher execution failed: {}", e.getMessage(), e);
+            throw new BusinessException(ErrorCode.CYPHER_ERROR, "查询执行失败: " + e.getMessage(), e);
         }
     }
 
@@ -82,9 +87,53 @@ public class Neo4jExecutor {
 
             return results;
 
+        } catch (BusinessException e) {
+            // Re-throw business exceptions as-is
+            throw e;
         } catch (Exception e) {
-            log.error("Cypher execution failed: {}", e.getMessage());
+            log.error("Cypher execution failed: {}", e.getMessage(), e);
+            // Return empty list instead of throwing for raw queries
+            // This allows callers to handle empty results gracefully
             return Collections.emptyList();
+        }
+    }
+
+    /**
+     * Execute query and return count
+     */
+    public long executeCount(String cypher, Long projectId) {
+        try {
+            var result = neo4jClient.query(cypher)
+                .bind(projectId).to("projectId")
+                .fetch()
+                .one();
+
+            if (result.isPresent()) {
+                Object count = result.get().get("count");
+                if (count instanceof Number) {
+                    return ((Number) count).longValue();
+                }
+            }
+            return 0;
+        } catch (Exception e) {
+            log.error("Count query failed: {}", e.getMessage(), e);
+            return 0;
+        }
+    }
+
+    /**
+     * Execute query without returning results (for mutations)
+     */
+    public void executeUpdate(String cypher, Long projectId) {
+        try {
+            neo4jClient.query(cypher)
+                .bind(projectId).to("projectId")
+                .run();
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("Update query failed: {}", e.getMessage(), e);
+            throw new BusinessException(ErrorCode.CYPHER_ERROR, "更新操作失败: " + e.getMessage(), e);
         }
     }
 
@@ -95,9 +144,13 @@ public class Neo4jExecutor {
             Object value = entry.getValue();
 
             if (value instanceof org.neo4j.driver.types.Node nodeValue) {
+                List<String> labelList = new ArrayList<>();
+                for (String label : nodeValue.labels()) {
+                    labelList.add(label);
+                }
                 nodes.add(GraphResult.Node.builder()
                     .id(String.valueOf(nodeValue.id()))
-                    .labels(new ArrayList<>(nodeValue.labels()))
+                    .labels(labelList)
                     .properties(convertProperties(nodeValue.asMap()))
                     .build());
             } else if (value instanceof org.neo4j.driver.types.Relationship relValue) {

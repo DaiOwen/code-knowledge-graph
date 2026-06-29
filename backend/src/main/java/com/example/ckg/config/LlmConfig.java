@@ -98,7 +98,7 @@ public class LlmConfig {
         return QwenChatModel.builder()
             .apiKey(apiKey)
             .modelName(modelName != null && !modelName.isEmpty() ? modelName : "qwen-max")
-            .temperature(temperature)
+            .temperature(temperature != null ? temperature.floatValue() : 0.7f)
             .maxTokens(maxTokens)
             .build();
     }
@@ -107,7 +107,7 @@ public class LlmConfig {
         return QwenStreamingChatModel.builder()
             .apiKey(apiKey)
             .modelName(modelName != null && !modelName.isEmpty() ? modelName : "qwen-max")
-            .temperature(temperature)
+            .temperature(temperature != null ? temperature.floatValue() : 0.7f)
             .maxTokens(maxTokens)
             .build();
     }

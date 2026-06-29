@@ -7,7 +7,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Ref;
+import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.transport.CredentialsProvider;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
@@ -82,11 +84,21 @@ public class GitService {
         List<String> changedFiles = new ArrayList<>();
 
         try (Git git = Git.open(new File(localPath))) {
-            git.diff()
-                .setOldTree(git.revParse(oldCommit))
-                .setNewTree(git.revParse(newCommit))
-                .call()
-                .forEach(entry -> changedFiles.add(entry.getNewPath()));
+            Repository repository = git.getRepository();
+            ObjectId oldTree = repository.resolve(oldCommit + "^{tree}");
+            ObjectId newTree = repository.resolve(newCommit + "^{tree}");
+
+            if (oldTree == null || newTree == null) {
+                return changedFiles;
+            }
+
+            try (org.eclipse.jgit.diff.DiffFormatter diffFormatter = new org.eclipse.jgit.diff.DiffFormatter(java.io.OutputStream.nullOutputStream())) {
+                diffFormatter.setRepository(repository);
+                List<org.eclipse.jgit.diff.DiffEntry> diffs = diffFormatter.scan(oldTree, newTree);
+                for (org.eclipse.jgit.diff.DiffEntry entry : diffs) {
+                    changedFiles.add(entry.getNewPath());
+                }
+            }
         }
 
         return changedFiles;
@@ -180,7 +192,7 @@ public class GitService {
         return new UsernamePasswordCredentialsProvider(username, password);
     }
 
-    private String sanitizeName(String name) {
+    public String sanitizeName(String name) {
         return name.replaceAll("[^a-zA-Z0-9_-]", "_");
     }
 }
