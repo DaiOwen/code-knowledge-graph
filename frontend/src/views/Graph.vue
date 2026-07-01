@@ -76,10 +76,10 @@
           <line
             v-for="edge in visibleEdges"
             :key="edge.id"
-            :x1="getNodeX(edge.sourceId)"
-            :y1="getNodeY(edge.sourceId)"
-            :x2="getNodeX(edge.targetId)"
-            :y2="getNodeY(edge.targetId)"
+            :x1="getNodeX(edge.sourceId!)"
+            :y1="getNodeY(edge.sourceId!)"
+            :x2="getNodeX(edge.targetId!)"
+            :y2="getNodeY(edge.targetId!)"
             :class="['edge', edge.type.toLowerCase(), { highlighted: isEdgeHighlighted(edge) }]"
             marker-end="url(#arrowhead)"
           />
@@ -157,10 +157,10 @@
                   v-for="edge in incomingEdges"
                   :key="edge.id"
                   class="relation-item"
-                  @click="focusNode(edge.sourceId)"
+                  @click="focusNode(edge.sourceId!)"
                 >
                   <el-icon><ArrowLeft /></el-icon>
-                  <span>{{ getNodeById(edge.sourceId)?.properties.name }}</span>
+                  <span>{{ getNodeById(edge.sourceId!)?.properties.name }}</span>
                 </div>
               </div>
             </el-tab-pane>
@@ -171,9 +171,9 @@
                   v-for="edge in outgoingEdges"
                   :key="edge.id"
                   class="relation-item"
-                  @click="focusNode(edge.targetId)"
+                  @click="focusNode(edge.targetId!)"
                 >
-                  <span>{{ getNodeById(edge.targetId)?.properties.name }}</span>
+                  <span>{{ getNodeById(edge.targetId!)?.properties.name }}</span>
                   <el-icon><ArrowRight /></el-icon>
                 </div>
               </div>
@@ -213,7 +213,7 @@
             :props="{ label: 'name', children: 'children' }"
             default-expand-all
           >
-            <template #default="{ node, data }">
+            <template #default="{ data }">
               <span class="impact-node">
                 <el-tag :type="data.type === 'method' ? 'success' : 'info'" size="small">
                   {{ data.type }}
@@ -230,7 +230,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -296,7 +296,7 @@ const visibleNodes = computed(() => {
 
 const visibleEdges = computed(() => {
   const nodeIds = new Set(visibleNodes.value.map(n => n.id))
-  return edges.value.filter(e => nodeIds.has(e.sourceId) && nodeIds.has(e.targetId))
+  return edges.value.filter(e => nodeIds.has(e.sourceId!) && nodeIds.has(e.targetId!))
 })
 
 const incomingEdges = computed(() => {
@@ -327,7 +327,7 @@ async function loadGraph() {
       edges.value = response.data.relationships
 
       // Build node map and set edge source/target
-      const nodeMap = new Map(nodes.value.map(n => [n.id, n]))
+      new Map(nodes.value.map(n => [n.id, n]))
 
       edges.value = edges.value.map(edge => ({
         ...edge,
@@ -397,10 +397,10 @@ function focusNode(nodeId: string) {
     // Highlight connected nodes
     edges.value.forEach(edge => {
       if (edge.sourceId === nodeId) {
-        highlightedNodes.value.add(edge.targetId)
+        highlightedNodes.value.add(edge.targetId!)
       }
       if (edge.targetId === nodeId) {
-        highlightedNodes.value.add(edge.sourceId)
+        highlightedNodes.value.add(edge.sourceId!)
       }
     })
 
@@ -450,7 +450,7 @@ function isNodeHighlighted(node: GraphNode) {
 }
 
 function isEdgeHighlighted(edge: GraphRelationship) {
-  return highlightedNodes.value.has(edge.sourceId) || highlightedNodes.value.has(edge.targetId)
+  return highlightedNodes.value.has(edge.sourceId!) || highlightedNodes.value.has(edge.targetId!)
 }
 
 function startDrag(event: MouseEvent, node: GraphNode) {

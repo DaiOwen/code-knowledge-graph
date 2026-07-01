@@ -112,13 +112,13 @@ async function handleImport() {
   await importFormRef.value?.validate()
   importLoading.value = true
   try {
-    const res = await createProject(importForm)
+    const res = await createProject(importForm) as any
     if (res.success) {
       ElMessage.success('项目导入成功')
       importDialogVisible.value = false
       await loadProjects()
     } else {
-      ElMessage.error(res.message)
+      ElMessage.error(res.message || '操作失败')
     }
   } catch (e: any) {
     ElMessage.error(e.message || '导入失败')

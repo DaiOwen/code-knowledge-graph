@@ -120,8 +120,8 @@ export function streamAnswer(data: {
     eventSource.close()
   })
 
-  eventSource.addEventListener('error', (event) => {
-    callbacks.onError(new Error(event.data || 'Stream error'))
+  eventSource.addEventListener('error', (event: MessageEvent) => {
+    callbacks.onError(new Error((event as MessageEvent).data || 'Stream error'))
     eventSource.close()
   })
 

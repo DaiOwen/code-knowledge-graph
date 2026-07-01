@@ -252,7 +252,7 @@ function initEditor() {
     glyphMargin: false,
     lineDecorationsWidth: 10,
     renderLineHighlight: 'line',
-    scrollbars: {
+    scrollbar: {
       vertical: 'auto',
       horizontal: 'auto'
     },
