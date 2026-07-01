@@ -15,7 +15,7 @@ services:
       - neo4j_logs:/logs
       - ./docker/neo4j/init:/var/lib/neo4j/init
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7474"]
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
